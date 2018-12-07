@@ -1,0 +1,68 @@
+module topographly {
+  yang-version "1.1";
+  namespace "https://github.com/benmaddison/topographly";
+  prefix "topographly";
+
+  typedef node-ref {
+    type leafref {
+      path "../../../../nodes/node/hostname";
+    }
+  }
+
+  grouping node-data {
+    leaf hostname {
+      type string;
+    }
+  }
+
+  grouping link-data {
+    leaf ip-prefix {
+      type string;
+    }
+    leaf endpoint-a {
+      type node-ref;
+    }
+    leaf endpoint-z {
+      type leafref {
+        path "../../../../nodes/node/hostname";
+      }
+    }
+  }
+
+  container topology {
+    container nodes {
+      list node {
+        key "hostname";
+        leaf hostname {
+          type leafref {
+            path "../config/hostname";
+          }
+        }
+        container config {
+          uses node-data;
+        }
+        container state {
+          config false;
+          uses node-data;
+        }
+      }
+    }
+    container links {
+      list link {
+        key "ip-prefix";
+        leaf ip-prefix {
+          type leafref {
+            path "../config/ip-prefix";
+          }
+        }
+        container config {
+          uses link-data;
+        }
+        container state {
+          config false;
+          uses link-data;
+        }
+      }
+    }
+  }
+}

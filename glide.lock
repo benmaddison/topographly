@@ -1,0 +1,235 @@
+hash: ae305783251a321714ecaa4edecddb4b4c35eeae617f7e360268de9ffecb293e
+updated: 2018-12-07T16:46:28.8142867+02:00
+imports:
+- name: github.com/attic-labs/graphql
+  version: 917f92ca24a759a0e3bfd1b135850f9b0c04682e
+  subpackages:
+  - gqlerrors
+  - language/ast
+  - language/kinds
+  - language/lexer
+  - language/location
+  - language/parser
+  - language/printer
+  - language/source
+  - language/typeInfo
+  - language/visitor
+- name: github.com/attic-labs/noms
+  version: 72cc4fd834487792f202ccb9b2668f96f12ef91e
+  subpackages:
+  - go/config
+  - go/datas
+  - go/marshal
+  - go/types
+- name: github.com/attic-labs/testify
+  version: 4aeb20c38a7bce059590a23553f8a84808c9902f
+  subpackages:
+  - assert
+- name: github.com/aws/aws-sdk-go
+  version: 9e1995b17778e23380e61cb493a1f58bdc88cb6e
+  subpackages:
+  - aws
+  - aws/awserr
+  - aws/awsutil
+  - aws/client
+  - aws/client/metadata
+  - aws/corehandlers
+  - aws/credentials
+  - aws/credentials/ec2rolecreds
+  - aws/credentials/endpointcreds
+  - aws/credentials/processcreds
+  - aws/credentials/stscreds
+  - aws/crr
+  - aws/csm
+  - aws/defaults
+  - aws/ec2metadata
+  - aws/endpoints
+  - aws/request
+  - aws/session
+  - aws/signer/v4
+  - internal/ini
+  - internal/s3err
+  - internal/sdkio
+  - internal/sdkrand
+  - internal/sdkuri
+  - internal/shareddefaults
+  - private/protocol
+  - private/protocol/eventstream
+  - private/protocol/eventstream/eventstreamapi
+  - private/protocol/json/jsonutil
+  - private/protocol/jsonrpc
+  - private/protocol/query
+  - private/protocol/query/queryutil
+  - private/protocol/rest
+  - private/protocol/restxml
+  - private/protocol/xml/xmlutil
+  - service/dynamodb
+  - service/s3
+  - service/sts
+- name: github.com/BurntSushi/toml
+  version: 3012a1dbe2e4bd1391d42b32f0577cb7bbc7f005
+- name: github.com/davecgh/go-spew
+  version: 04cdfd42973bb9c8589fd6a731800cf222fde1a9
+  subpackages:
+  - spew
+- name: github.com/dustin/go-humanize
+  version: 9f541cc9db5d55bce703bd99987c9d5cb8eea45e
+- name: github.com/golang/glog
+  version: 23def4e6c14b4da8ac2ed8007337bc5eb5007998
+- name: github.com/golang/protobuf
+  version: 1d3f30b51784bec5aad268e59fd3c2fc1c2fe73f
+  subpackages:
+  - proto
+  - protoc-gen-go/descriptor
+  - ptypes
+  - ptypes/any
+  - ptypes/duration
+  - ptypes/timestamp
+- name: github.com/golang/snappy
+  version: 2e65f85255dbc3072edf28d6b5b8efc472979f5a
+- name: github.com/graphql-go/graphql
+  version: 08943645bf265d192b32f2100cdff2428f7ae7c5
+  subpackages:
+  - gqlerrors
+  - language/ast
+  - language/kinds
+  - language/lexer
+  - language/location
+  - language/parser
+  - language/printer
+  - language/source
+  - language/typeInfo
+  - language/visitor
+- name: github.com/graphql-go/handler
+  version: 28550b403f666810d217c1890a1bfde8a3297494
+- name: github.com/jmespath/go-jmespath
+  version: c2b33e8439af944379acbdd9c3a5fe0bc44bd8a5
+- name: github.com/jpillora/backoff
+  version: 3050d21c67d7c46b07ca1b5e1be0b26669c8d04c
+- name: github.com/juju/gnuflag
+  version: 2ce1bb71843d6d179b3f1c1c9cb4a72cd067fc65
+- name: github.com/julienschmidt/httprouter
+  version: 26a05976f9bf5c3aa992cc20e8588c359418ee58
+- name: github.com/kch42/buzhash
+  version: 9bdec3dec7c611fa97beadc374d75bdf02cd880e
+- name: github.com/kylelemons/godebug
+  version: d65d576e9348f5982d7f6d83682b694e731a45c6
+  subpackages:
+  - diff
+  - pretty
+- name: github.com/openconfig/gnmi
+  version: 33a1865c302903e7a2e06f35960e6bc31e84b9f6
+  subpackages:
+  - errlist
+  - proto/gnmi
+  - proto/gnmi_ext
+  - value
+- name: github.com/openconfig/goyang
+  version: 24acb47f3a65c2515a18f81573bb9504e544c7a6
+  subpackages:
+  - pkg/indent
+  - pkg/yang
+- name: github.com/openconfig/ygot
+  version: b71b4131ec632fdb387e35dfe635182ad2368c1f
+  subpackages:
+  - util
+  - ygot
+  - ytypes
+- name: github.com/pmezard/go-difflib
+  version: d8ed2627bdf02c080bf22230dbb337003b7aba2d
+  subpackages:
+  - difflib
+- name: github.com/syndtr/goleveldb
+  version: b001fa50d6b27f3f0bb175a87d0cb55426d0a0ae
+  subpackages:
+  - leveldb
+  - leveldb/cache
+  - leveldb/comparer
+  - leveldb/errors
+  - leveldb/filter
+  - leveldb/iterator
+  - leveldb/journal
+  - leveldb/memdb
+  - leveldb/opt
+  - leveldb/storage
+  - leveldb/table
+  - leveldb/util
+- name: golang.org/x/net
+  version: 351d144fa1fc0bd934e2408202be0c29f25e35a0
+  subpackages:
+  - context
+  - http/httpguts
+  - http2
+  - http2/hpack
+  - idna
+  - internal/timeseries
+  - trace
+- name: golang.org/x/sys
+  version: 70b957f3b65e069b4930ea94e2721eefa0f8f695
+  subpackages:
+  - unix
+- name: golang.org/x/text
+  version: 6f44c5a2ea40ee3593d98cdcc905cc1fdaa660e2
+  subpackages:
+  - secure/bidirule
+  - transform
+  - unicode/bidi
+  - unicode/norm
+- name: google.golang.org/genproto
+  version: bd91e49a0898e27abb88c339b432fa53d7497ac0
+  subpackages:
+  - googleapis/rpc/status
+- name: google.golang.org/grpc
+  version: 187e357ac194b625331eb5f35c6440c40770f018
+  subpackages:
+  - balancer
+  - balancer/base
+  - balancer/roundrobin
+  - binarylog/grpc_binarylog_v1
+  - codes
+  - connectivity
+  - credentials
+  - credentials/internal
+  - encoding
+  - encoding/proto
+  - grpclog
+  - internal
+  - internal/backoff
+  - internal/binarylog
+  - internal/channelz
+  - internal/envconfig
+  - internal/grpcrand
+  - internal/grpcsync
+  - internal/syscall
+  - internal/transport
+  - keepalive
+  - metadata
+  - naming
+  - peer
+  - resolver
+  - resolver/dns
+  - resolver/passthrough
+  - stats
+  - status
+  - tap
+- name: gopkg.in/attic-labs/noms.v7
+  version: 72cc4fd834487792f202ccb9b2668f96f12ef91e
+  subpackages:
+  - go/chunks
+  - go/constants
+  - go/d
+  - go/datas
+  - go/hash
+  - go/merge
+  - go/metrics
+  - go/nbs
+  - go/ngql
+  - go/nomdl
+  - go/spec
+  - go/types
+  - go/util/exit
+  - go/util/functions
+  - go/util/sizecache
+  - go/util/verbose
+  - go/util/writers
+testImports: []
