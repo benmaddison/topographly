@@ -4,9 +4,10 @@ go:
   - "1.10"
 
 env:
-  - NOMS_VERSION_NEXT=1
-  - GLANGCI_LINT_VERSION="v1.12.3"
-  - COVERPROFILE="coverage.out"
+  global:
+    - NOMS_VERSION_NEXT=1
+    - GLANGCI_LINT_VERSION="v1.12.3"
+    - COVERPROFILE="coverage.out"
 
 install:
   - go get github.com/mattn/goveralls
