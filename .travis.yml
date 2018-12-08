@@ -3,13 +3,21 @@ language: go
 go:
   - "1.10"
 
+env:
+  - NOMS_VERSION_NEXT=1
+  - GLANGCI_LINT_VERSION="v1.12.3"
+  - COVERPROFILE="coverage.out"
+
 install:
   - go get github.com/mattn/goveralls
-  - curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $GOPATH/bin v1.12.3
+  - curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $GOPATH/bin $GLANGCI_LINT_VERSION
 
 script:
-  - $GOPATH/bin/golangci-lint run
-  - $GOPATH/bin/goveralls -service=travis-ci
+  - golangci-lint run
+  - go test ./... -v -covermode=count -coverprofile=$COVERPROFILE
+
+after_success:
+  - goveralls -coverprofile=$COVERPROFILE -service=travis-ci
 
 notifications:
   email: false
