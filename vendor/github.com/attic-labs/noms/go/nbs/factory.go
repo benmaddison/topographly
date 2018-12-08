@@ -8,11 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"sync"
-	"time"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/util/sizecache"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -21,6 +20,8 @@ import (
 const (
 	defaultAWSReadLimit = 1024
 	awsMaxTables        = 128
+
+	defaultSmallTableCacheSize = 1 << 28 // 256MB
 )
 
 // AWSStoreFactory vends NomsBlockStores built on top of DynamoDB and S3.
@@ -30,6 +31,7 @@ type AWSStoreFactory struct {
 	table     string
 	conjoiner conjoiner
 
+	manifestLocks *manifestLocks
 	manifestCache *manifestCache
 }
 
@@ -46,35 +48,35 @@ func NewAWSStoreFactory(sess *session.Session, table, bucket string, maxOpenFile
 		tc = newFSTableCache(tableCacheDir, tableCacheSize, maxOpenFiles)
 	}
 
+	ddb := dynamodb.New(sess)
+	readRateLimiter := make(chan struct{}, defaultAWSReadLimit)
 	return &AWSStoreFactory{
-		ddb: dynamodb.New(sess),
-		persister: &s3TablePersister{
+		ddb: ddb,
+		persister: &awsTablePersister{
 			s3.New(sess),
 			bucket,
-			defaultS3PartSize,
-			minS3PartSize,
-			maxS3PartSize,
-			indexCache,
-			make(chan struct{}, defaultAWSReadLimit),
+			readRateLimiter,
 			tc,
+			&ddbTableStore{ddb, table, readRateLimiter, sizecache.New(defaultSmallTableCacheSize)},
+			awsLimits{defaultS3PartSize, minS3PartSize, maxS3PartSize, maxDynamoItemSize, maxDynamoChunks},
+			indexCache,
 		},
 		table:         table,
-		conjoiner:     newAsyncConjoiner(awsMaxTables),
+		conjoiner:     inlineConjoiner{awsMaxTables},
+		manifestLocks: newManifestLocks(),
 		manifestCache: newManifestCache(defaultManifestCacheSize),
 	}
 }
 
 func (asf *AWSStoreFactory) CreateStore(ns string) chunks.ChunkStore {
-	mm := cachingManifest{newDynamoManifest(asf.table, ns, asf.ddb), asf.manifestCache}
+	mm := manifestManager{newDynamoManifest(asf.table, ns, asf.ddb), asf.manifestCache, asf.manifestLocks}
 	return newNomsBlockStore(mm, asf.persister, asf.conjoiner, defaultMemTableSize)
 }
 
 func (asf *AWSStoreFactory) CreateStoreFromCache(ns string) chunks.ChunkStore {
-	mm := cachingManifest{newDynamoManifest(asf.table, ns, asf.ddb), asf.manifestCache}
+	mm := manifestManager{newDynamoManifest(asf.table, ns, asf.ddb), asf.manifestCache, asf.manifestLocks}
 
-	contents, _, present := func() (manifestContents, time.Time, bool) {
-		return asf.manifestCache.Get(mm.Name())
-	}()
+	contents, _, present := asf.manifestCache.Get(mm.Name())
 	if present {
 		return newNomsBlockStoreWithContents(mm, contents, asf.persister, asf.conjoiner, defaultMemTableSize)
 	}
@@ -90,8 +92,8 @@ type LocalStoreFactory struct {
 	indexCache *indexCache
 	conjoiner  conjoiner
 
-	manifestCacheMu sync.Mutex
-	manifestCache   *manifestCache
+	manifestLocks *manifestLocks
+	manifestCache *manifestCache
 }
 
 func checkDir(dir string) error {
@@ -117,8 +119,9 @@ func NewLocalStoreFactory(dir string, indexCacheSize uint64, maxOpenFiles int) c
 		dir:           dir,
 		fc:            newFDCache(maxOpenFiles),
 		indexCache:    indexCache,
+		conjoiner:     inlineConjoiner{defaultMaxTables},
+		manifestLocks: newManifestLocks(),
 		manifestCache: newManifestCache(defaultManifestCacheSize),
-		conjoiner:     newAsyncConjoiner(defaultMaxTables),
 	}
 }
 
@@ -126,20 +129,16 @@ func (lsf *LocalStoreFactory) CreateStore(ns string) chunks.ChunkStore {
 	path := path.Join(lsf.dir, ns)
 	d.PanicIfError(os.MkdirAll(path, 0777))
 
-	mm := cachingManifest{fileManifest{path}, lsf.manifestCache}
+	mm := manifestManager{fileManifest{path}, lsf.manifestCache, lsf.manifestLocks}
 	p := newFSTablePersister(path, lsf.fc, lsf.indexCache)
 	return newNomsBlockStore(mm, p, lsf.conjoiner, defaultMemTableSize)
 }
 
 func (lsf *LocalStoreFactory) CreateStoreFromCache(ns string) chunks.ChunkStore {
 	path := path.Join(lsf.dir, ns)
-	mm := cachingManifest{fileManifest{path}, lsf.manifestCache}
+	mm := manifestManager{fileManifest{path}, lsf.manifestCache, lsf.manifestLocks}
 
-	contents, _, present := func() (manifestContents, time.Time, bool) {
-		lsf.manifestCacheMu.Lock()
-		defer lsf.manifestCacheMu.Unlock()
-		return lsf.manifestCache.Get(mm.Name())
-	}()
+	contents, _, present := lsf.manifestCache.Get(mm.Name())
 	if present {
 		_, err := os.Stat(path)
 		d.PanicIfTrue(os.IsNotExist(err))

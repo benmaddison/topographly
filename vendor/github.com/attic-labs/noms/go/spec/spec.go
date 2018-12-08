@@ -14,11 +14,11 @@ import (
 	"regexp"
 	"strings"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/datas"
-	"gopkg.in/attic-labs/noms.v7/go/nbs"
-	"gopkg.in/attic-labs/noms.v7/go/types"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/datas"
+	"github.com/attic-labs/noms/go/nbs"
+	"github.com/attic-labs/noms/go/types"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
@@ -28,6 +28,13 @@ import (
 const Separator = "::"
 
 var datasetRe = regexp.MustCompile("^" + datas.DatasetRe.String() + "$")
+
+type ProtocolImpl interface {
+	NewChunkStore(sp Spec) (chunks.ChunkStore, error)
+	NewDatabase(sp Spec) (datas.Database, error)
+}
+
+var ExternalProtocols = map[string]ProtocolImpl{}
 
 // SpecOptions customize Spec behavior.
 type SpecOptions struct {
@@ -89,6 +96,9 @@ func ForDataset(spec string) (Spec, error) {
 // ForDatasetOpts parses a spec for a Dataset.
 func ForDatasetOpts(spec string, opts SpecOptions) (Spec, error) {
 	dbSpec, pathStr, err := splitDatabaseSpec(spec)
+	if err != nil {
+		return Spec{}, err
+	}
 
 	sp, err := newSpec(dbSpec, opts)
 	if err != nil {
@@ -178,8 +188,15 @@ func (sp Spec) NewChunkStore() chunks.ChunkStore {
 	case "mem":
 		storage := &chunks.MemoryStorage{}
 		return storage.NewView()
+	default:
+		impl, ok := ExternalProtocols[sp.Protocol]
+		if !ok {
+			d.PanicIfError(fmt.Errorf("Unknown protocol: %s", sp.Protocol))
+		}
+		r, err := impl.NewChunkStore(sp)
+		d.PanicIfError(err)
+		return r
 	}
-	panic("unreachable")
 }
 
 func parseAWSSpec(awsURL string) chunks.ChunkStore {
@@ -275,8 +292,15 @@ func (sp Spec) createDatabase() datas.Database {
 	case "mem":
 		storage := &chunks.MemoryStorage{}
 		return datas.NewDatabase(storage.NewView())
+	default:
+		impl, ok := ExternalProtocols[sp.Protocol]
+		if !ok {
+			d.PanicIfError(fmt.Errorf("Unknown protocol: %s", sp.Protocol))
+		}
+		r, err := impl.NewDatabase(sp)
+		d.PanicIfError(err)
+		return r
 	}
-	panic("unreachable")
 }
 
 func parseDatabaseSpec(spec string) (protocol, name string, err error) {
@@ -296,6 +320,12 @@ func parseDatabaseSpec(spec string) (protocol, name string, err error) {
 		} else {
 			protocol, name = "nbs", spec
 		}
+		return
+	}
+
+	if _, ok := ExternalProtocols[parts[0]]; ok {
+		fmt.Println("found external spec", parts[0])
+		protocol, name = parts[0], parts[1]
 		return
 	}
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 	humanize "github.com/dustin/go-humanize"
 )
 
@@ -27,6 +27,7 @@ import (
 //
 // Only implemented: Log2-based histogram
 type Histogram struct {
+	sum      uint64
 	buckets  [bucketCount]uint64
 	ToString ToStringFunc
 }
@@ -37,13 +38,15 @@ func identToString(v uint64) string {
 	return fmt.Sprintf("%d", v)
 }
 
-const bucketCount = 63
+const bucketCount = 64
 
 // Sample adds a uint64 data point to the histogram
 func (h *Histogram) Sample(v uint64) {
 	d.PanicIfTrue(v == 0)
-	pot := 0
 
+	h.sum += v
+
+	pot := 0
 	for v > 0 {
 		v = v >> 1
 		pot++
@@ -63,7 +66,7 @@ func (h *Histogram) SampleTimeSince(t time.Time) {
 	h.Sample(uint64(d))
 }
 
-// SampleTime is a convenience wrapper around Sample which internally type
+// SampleLen is a convenience wrapper around Sample which internally type
 // asserts the int to a uint64
 func (h *Histogram) SampleLen(l int) {
 	h.Sample(uint64(l))
@@ -73,36 +76,30 @@ func (h Histogram) bucketVal(bucket int) uint64 {
 	return 1 << (uint64(bucket))
 }
 
-// The bucket sum is reported as the mid-point value of a bucket multiplied by
-// the number of samples in the bucket
-func (h Histogram) bucketSum(bucket int) uint64 {
-	return h.buckets[bucket] * (h.bucketVal(bucket) + h.bucketVal(bucket+1)) / 2
-}
-
-// Sum return the sum of sampled values, given that each sample is clamped to
-// the mid-point value of the bucket in which it is recorded.
+// Sum return the sum of sampled values, note that Sum can be overflowed without
+// overflowing the histogram buckets.
 func (h Histogram) Sum() uint64 {
-	sum := uint64(0)
-	for i := 0; i < bucketCount; i++ {
-		sum += h.bucketSum(i)
-	}
-	return sum
+	return h.sum
 }
 
 // Add returns a new Histogram which is the result of adding this and other
 // bucket-wise.
 func (h *Histogram) Add(other Histogram) {
+	h.sum += other.sum
+
 	for i := 0; i < bucketCount; i++ {
 		h.buckets[i] += other.buckets[i]
 	}
 }
 
-// Delta returns a new Histogram whcih is the result of subtracting other from
+// Delta returns a new Histogram which is the result of subtracting other from
 // this bucket-wise. The intent is to capture changes in the state of histogram
 // which is collecting samples over some time period. It will panic if any
 // bucket from other is larger than the corresponding bucket in this.
 func (h Histogram) Delta(other Histogram) Histogram {
 	nh := Histogram{}
+	nh.sum = h.sum - other.sum
+
 	for i := 0; i < bucketCount; i++ {
 		c := h.buckets[i]
 		l := other.buckets[i]
@@ -147,7 +144,7 @@ func timeToString(v uint64) string {
 	return time.Duration(v).String()
 }
 
-// ByteHistogram stringifies values using humanize over byte values
+// NewByteHistogram stringifies values using humanize over byte values
 func NewByteHistogram() Histogram {
 	return Histogram{ToString: humanize.Bytes}
 }

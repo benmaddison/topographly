@@ -4,7 +4,7 @@
 
 package types
 
-import "gopkg.in/attic-labs/noms.v7/go/hash"
+import "github.com/attic-labs/noms/go/hash"
 
 var getHashOverride func(v Value) hash.Hash
 
@@ -24,12 +24,4 @@ func EnsureHash(h *hash.Hash, v Value) hash.Hash {
 		*h = getHash(v)
 	}
 	return *h
-}
-
-type hashCacher interface {
-	hashPointer() *hash.Hash
-}
-
-func assignHash(hc hashCacher, h hash.Hash) {
-	*hc.hashPointer() = h
 }

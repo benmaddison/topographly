@@ -5,7 +5,9 @@
 package types
 
 import (
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"bytes"
+
+	"github.com/attic-labs/noms/go/hash"
 )
 
 type ValueCallback func(v Value)
@@ -16,7 +18,7 @@ type Valuable interface {
 	// Kind is the NomsKind describing the kind of value this is.
 	Kind() NomsKind
 
-	Value(vrw ValueReadWriter) Value
+	Value() Value
 }
 
 // Emptyable is an interface for Values which may or may not be empty
@@ -54,6 +56,9 @@ type Value interface {
 	// and unions might have a single element, duplicates and be in the wrong
 	// order.
 	typeOf() *Type
+
+	// writeTo writes the encoded version of the value to a nomsWriter.
+	writeTo(nomsWriter)
 }
 
 type ValueSlice []Value
@@ -73,4 +78,79 @@ func (vs ValueSlice) Equals(other ValueSlice) bool {
 	}
 
 	return true
+}
+
+func (vs ValueSlice) Contains(v Value) bool {
+	for _, v := range vs {
+		if v.Equals(v) {
+			return true
+		}
+	}
+	return false
+}
+
+type valueReadWriter interface {
+	valueReadWriter() ValueReadWriter
+}
+
+type valueImpl struct {
+	vrw     ValueReadWriter
+	buff    []byte
+	offsets []uint32
+}
+
+func (v valueImpl) valueReadWriter() ValueReadWriter {
+	return v.vrw
+}
+
+func (v valueImpl) writeTo(enc nomsWriter) {
+	enc.writeRaw(v.buff)
+}
+
+func (v valueImpl) valueBytes() []byte {
+	return v.buff
+}
+
+// IsZeroValue can be used to test if a Value is the same as T{}.
+func (v valueImpl) IsZeroValue() bool {
+	return v.buff == nil
+}
+
+func (v valueImpl) Hash() hash.Hash {
+	return hash.Of(v.buff)
+}
+
+func (v valueImpl) decoder() valueDecoder {
+	return newValueDecoder(v.buff, v.vrw)
+}
+
+func (v valueImpl) decoderAtOffset(offset int) valueDecoder {
+	return newValueDecoder(v.buff[offset:], v.vrw)
+}
+
+func (v valueImpl) asValueImpl() valueImpl {
+	return v
+}
+
+func (v valueImpl) Equals(other Value) bool {
+	if otherValueImpl, ok := other.(asValueImpl); ok {
+		return bytes.Equal(v.buff, otherValueImpl.asValueImpl().buff)
+	}
+	return false
+}
+
+func (v valueImpl) Less(other Value) bool {
+	return valueLess(v, other)
+}
+
+func (v valueImpl) WalkRefs(cb RefCallback) {
+	walkRefs(v.valueBytes(), cb)
+}
+
+type asValueImpl interface {
+	asValueImpl() valueImpl
+}
+
+func (v valueImpl) Kind() NomsKind {
+	return NomsKind(v.buff[0])
 }

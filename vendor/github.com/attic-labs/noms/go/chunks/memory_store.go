@@ -7,9 +7,9 @@ package chunks
 import (
 	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/constants"
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/constants"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
 )
 
 // MemoryStorage provides a "persistent" storage layer to back multiple
@@ -181,6 +181,10 @@ func (ms *MemoryStoreView) Commit(current, last hash.Hash) bool {
 
 func (ms *MemoryStoreView) Stats() interface{} {
 	return nil
+}
+
+func (ms *MemoryStoreView) StatsSummary() string {
+	return "Unsupported"
 }
 
 func (ms *MemoryStoreView) Close() error {

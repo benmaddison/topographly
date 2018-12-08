@@ -12,18 +12,17 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"net/url"
 	"runtime"
 	"strings"
 	"time"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/constants"
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
-	"gopkg.in/attic-labs/noms.v7/go/ngql"
-	"gopkg.in/attic-labs/noms.v7/go/types"
-	"gopkg.in/attic-labs/noms.v7/go/util/verbose"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/constants"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
+	"github.com/attic-labs/noms/go/ngql"
+	"github.com/attic-labs/noms/go/types"
+	"github.com/attic-labs/noms/go/util/verbose"
 	"github.com/golang/snappy"
 )
 
@@ -89,6 +88,8 @@ var (
 	HandleBaseGet = handleBaseGet
 
 	HandleGraphQL = createHandler(handleGraphQL, false)
+
+	HandleStats = createHandler(handleStats, false)
 
 	writeValueConcurrency = runtime.NumCPU()
 )
@@ -194,20 +195,24 @@ func handleWriteValue(w http.ResponseWriter, req *http.Request, ps URLParams, cs
 	w.WriteHeader(http.StatusCreated)
 }
 
-// Contents of the returned io.Reader are snappy-compressed.
-func buildWriteValueRequest(chunkChan chan *chunks.Chunk) io.Reader {
+// Contents of the returned io.ReadCloser are snappy-compressed.
+func buildWriteValueRequest(chunkChan chan *chunks.Chunk) io.ReadCloser {
 	body, pw := io.Pipe()
 
 	go func() {
-		gw := snappy.NewBufferedWriter(pw)
+		sw := snappy.NewBufferedWriter(pw)
+		defer checkClose(pw)
+		defer checkClose(sw)
 		for c := range chunkChan {
-			chunks.Serialize(*c, gw)
+			chunks.Serialize(*c, sw)
 		}
-		d.Chk.NoError(gw.Close())
-		d.Chk.NoError(pw.Close())
 	}()
 
 	return body
+}
+
+func checkClose(c io.Closer) {
+	d.PanicIfError(c.Close())
 }
 
 func bodyReader(req *http.Request) (reader io.ReadCloser) {
@@ -309,26 +314,27 @@ func handleGetBlob(w http.ResponseWriter, req *http.Request, ps URLParams, cs ch
 }
 
 func extractHashes(req *http.Request) hash.HashSlice {
-	err := req.ParseForm()
-	d.PanicIfError(err)
-	hashStrs := req.PostForm["ref"]
-	if len(hashStrs) <= 0 {
-		d.Panic("PostForm is empty")
-	}
-
-	hashes := make(hash.HashSlice, len(hashStrs))
-	for idx, refStr := range hashStrs {
-		hashes[idx] = hash.Parse(refStr)
-	}
-	return hashes
+	reader := bodyReader(req)
+	defer reader.Close()
+	defer io.Copy(ioutil.Discard, reader) // Ensure all data on reader is consumed
+	return deserializeHashes(reader)
 }
 
-func buildHashesRequest(batch chunks.ReadBatch) io.Reader {
-	values := &url.Values{}
-	for h := range batch {
-		values.Add("ref", h.String())
+func BuildHashesRequestForTest(hashes hash.HashSet) io.ReadCloser {
+	batch := chunks.ReadBatch{}
+	for h := range hashes {
+		batch[h] = nil
 	}
-	return strings.NewReader(values.Encode())
+	return buildHashesRequest(batch)
+}
+
+func buildHashesRequest(batch chunks.ReadBatch) io.ReadCloser {
+	body, pw := io.Pipe()
+	go func() {
+		defer checkClose(pw)
+		serializeHashes(pw, batch)
+	}()
+	return body
 }
 
 func handleHasRefs(w http.ResponseWriter, req *http.Request, ps URLParams, cs chunks.ChunkStore) {
@@ -356,6 +362,14 @@ func handleRootGet(w http.ResponseWriter, req *http.Request, ps URLParams, rt ch
 	w.Header().Add("content-type", "text/plain")
 }
 
+func handleStats(w http.ResponseWriter, req *http.Request, ps URLParams, cs chunks.ChunkStore) {
+	if req.Method != "GET" {
+		d.Panic("Expected get method.")
+	}
+	fmt.Fprint(w, cs.StatsSummary())
+	w.Header().Add("content-type", "text/plain")
+}
+
 func handleRootPost(w http.ResponseWriter, req *http.Request, ps URLParams, cs chunks.ChunkStore) {
 	if req.Method != "POST" {
 		d.Panic("Expected post method.")
@@ -367,46 +381,186 @@ func handleRootPost(w http.ResponseWriter, req *http.Request, ps URLParams, cs c
 		d.Panic(`Expected "last" query param value`)
 	}
 	last := hash.Parse(tokens[0])
+	// "current" should really, really be called "proposed" or something in the wire API
 	tokens = params["current"]
 	if len(tokens) != 1 {
 		d.Panic(`Expected "current" query param value`)
 	}
-	current := hash.Parse(tokens[0])
+	proposed := hash.Parse(tokens[0])
 
 	vs := types.NewValueStore(cs)
 
 	// Even though the Root is actually a Map<String, Ref<Commit>>, its Noms Type is Map<String, Ref<Value>> in order to prevent the root chunk from getting bloated with type info. That means that the Value of the proposed new Root needs to be manually type-checked. The simplest way to do that would be to iterate over the whole thing and pull the target of each Ref from |cs|. That's a lot of reads, though, and it's more efficient to just read the Value indicated by |last|, diff the proposed new root against it, and validate whatever new entries appear.
-	datasets := types.NewMap()
-	if !last.IsEmpty() {
-		lastVal := vs.ReadValue(last)
-		if lastVal == nil {
-			d.Panic("Can't Commit from a non-present Chunk")
-		}
+	lastMap := validateLast(last, vs)
 
-		datasets = lastVal.(types.Map)
+	proposedMap := validateProposed(proposed, last, vs)
+	if !proposedMap.Empty() {
+		assertMapOfStringToRefOfCommit(proposedMap, lastMap, vs)
 	}
 
-	// Only allowed to skip this check if both last and current are empty, because that represents the special case of someone flushing chunks into an empty store.
-	if !last.IsEmpty() || !current.IsEmpty() {
-		// Ensure that proposed new Root is present in cs, is a Map and, if it has anything in it, that it's <String, <Ref<Commit>>
-		proposed := vs.ReadValue(current)
-		if proposed == nil {
-			d.Panic("Can't set Root to a non-present Chunk")
+	// If some other client has committed to |vs| since it had |from| at the
+	// root, this call to vs.Commit() will fail. Used to be that we'd always
+	// propagate that failure back to the client and let them try again. This
+	// made one very common operation annoyingly expensive, though, as clients
+	// simultaneously committing to different Datasets would cause conflicts
+	// with this vs.Commit() right here. In this common case, the server
+	// already knows everything it needs to try again, so now we cut out the
+	// round trip to the client and just retry inline.
+	for to, from := proposed, last; !vs.Commit(to, from); {
+		// If committing failed, we go read out the map of Datasets at the root of the store, which is a Map[string]Ref<Commit>
+		rootMap := types.NewMap(vs)
+		root := vs.Root()
+		if v := vs.ReadValue(root); v != nil {
+			rootMap = v.(types.Map)
 		}
 
-		if m, ok := proposed.(types.Map); !ok {
-			d.Panic("Root of a Database must be a Map")
-		} else if !m.Empty() {
-			assertMapOfStringToRefOfCommit(m, datasets, vs)
+		// Since we know that lastMap is an ancestor of both proposedMap and
+		// rootMap, we can try to do a three-way merge here. We don't want to
+		// traverse the Ref<Commit>s stored in the maps, though, just
+		// basically merge the maps together as long the changes to rootMap
+		// and proposedMap were in different Datasets.
+		merged, err := mergeDatasetMaps(proposedMap, rootMap, lastMap, vs)
+		if err != nil {
+			verbose.Log("Attempted root map auto-merge failed: %s", err)
+			w.WriteHeader(http.StatusConflict)
+			break
+		}
+		to, from = vs.WriteValue(merged).TargetHash(), root
+	}
+
+	// If committing succeeded, the root of the store might be |proposed|...or
+	// it might be some result of the merge performed above. So, we need to
+	// tell the client what the new root is. If the commit failed, obviously
+	// we need to inform the client of the actual current root.
+	w.Header().Add("content-type", "text/plain")
+	fmt.Fprintf(w, "%v", vs.Root().String())
+}
+
+func validateLast(last hash.Hash, vrw types.ValueReadWriter) types.Map {
+	if last.IsEmpty() {
+		return types.NewMap(vrw)
+	}
+	lastVal := vrw.ReadValue(last)
+	if lastVal == nil {
+		d.Panic("Can't Commit from a non-present Chunk")
+	}
+	return lastVal.(types.Map)
+}
+
+func validateProposed(proposed, last hash.Hash, vrw types.ValueReadWriter) types.Map {
+	// Only allowed to skip this check if both last and proposed are empty, because that represents the special case of someone flushing chunks into an empty store.
+	if last.IsEmpty() && proposed.IsEmpty() {
+		return types.NewMap(vrw)
+	}
+	// Ensure that proposed new Root is present in vr, is a Map and, if it has anything in it, that it's <String, <Ref<Commit>>
+	proposedVal := vrw.ReadValue(proposed)
+	if proposedVal == nil {
+		d.Panic("Can't set Root to a non-present Chunk")
+	}
+
+	proposedMap, ok := proposedVal.(types.Map)
+	if !ok {
+		d.Panic("Root of a Database must be a Map")
+	}
+	return proposedMap
+}
+
+func assertMapOfStringToRefOfCommit(proposed, datasets types.Map, vr types.ValueReader) {
+	stopChan := make(chan struct{})
+	defer close(stopChan)
+	changes := make(chan types.ValueChanged)
+	go func() {
+		defer close(changes)
+		proposed.Diff(datasets, changes, stopChan)
+	}()
+	for change := range changes {
+		switch change.ChangeType {
+		case types.DiffChangeAdded, types.DiffChangeModified:
+			// Since this is a Map Diff, change.V is the key at which a change was detected.
+			// Go get the Value there, which should be a Ref<Value>, deref it, and then ensure the target is a Commit.
+			val := change.NewValue
+			ref, ok := val.(types.Ref)
+			if !ok {
+				d.Panic("Root of a Database must be a Map<String, Ref<Commit>>, but key %s maps to a %s", change.Key.(types.String), types.TypeOf(val).Describe())
+			}
+			if targetValue := ref.TargetValue(vr); !IsCommit(targetValue) {
+				d.Panic("Root of a Database must be a Map<String, Ref<Commit>>, but the ref at key %s points to a %s", change.Key.(types.String), types.TypeOf(targetValue).Describe())
+			}
+		}
+	}
+}
+
+func mergeDatasetMaps(a, b, parent types.Map, vrw types.ValueReadWriter) (types.Map, error) {
+	aChangeChan, bChangeChan := make(chan types.ValueChanged), make(chan types.ValueChanged)
+	stopChan := make(chan struct{})
+
+	go func() {
+		defer close(aChangeChan)
+		a.Diff(parent, aChangeChan, stopChan)
+	}()
+	go func() {
+		defer close(bChangeChan)
+		b.Diff(parent, bChangeChan, stopChan)
+	}()
+	defer func() {
+		close(stopChan)
+		for range aChangeChan {
+		}
+		for range bChangeChan {
+		}
+	}()
+
+	apply := func(target *types.MapEditor, change types.ValueChanged, newVal types.Value) *types.MapEditor {
+		switch change.ChangeType {
+		case types.DiffChangeAdded, types.DiffChangeModified:
+			return target.Set(change.Key, newVal)
+		case types.DiffChangeRemoved:
+			return target.Remove(change.Key)
+		default:
+			panic("Not Reached")
 		}
 	}
 
-	if !cs.Commit(current, last) {
-		w.WriteHeader(http.StatusConflict)
-		w.Header().Add("content-type", "text/plain")
-		fmt.Fprintf(w, "%v", cs.Root().String())
-		return
+	merged := parent.Edit()
+	aChange, bChange := types.ValueChanged{}, types.ValueChanged{}
+	for {
+		if aChange.Key == nil {
+			aChange = <-aChangeChan
+		}
+		if bChange.Key == nil {
+			bChange = <-bChangeChan
+		}
+
+		// Both channels are producing zero values, so we're done.
+		if aChange.Key == nil && bChange.Key == nil {
+			break
+		}
+
+		if aChange.Key != nil && (bChange.Key == nil || aChange.Key.Less(bChange.Key)) {
+			merged = apply(merged, aChange, a.Get(aChange.Key))
+			aChange = types.ValueChanged{}
+			continue
+		} else if bChange.Key != nil && (aChange.Key == nil || bChange.Key.Less(aChange.Key)) {
+			merged = apply(merged, bChange, b.Get(bChange.Key))
+			bChange = types.ValueChanged{}
+			continue
+		}
+
+		d.PanicIfFalse(aChange.Key.Equals(bChange.Key))
+		// If the two diffs generate different kinds of changes at the same key, conflict.
+		if aChange.ChangeType != bChange.ChangeType {
+			return parent, errors.New("Incompatible changes at " + types.EncodedValue(aChange.Key))
+		}
+
+		// Otherwise, we're OK IFF the two diffs made exactly the same change
+		aValue := a.Get(aChange.Key)
+		if aChange.ChangeType != types.DiffChangeRemoved && !aValue.Equals(b.Get(bChange.Key)) {
+			return parent, errors.New("Incompatible changes at " + types.EncodedValue(aChange.Key))
+		}
+		merged = apply(merged, aChange, aValue)
+		aChange, bChange = types.ValueChanged{}, types.ValueChanged{}
 	}
+	return merged.Map(), nil
 }
 
 func handleGraphQL(w http.ResponseWriter, req *http.Request, ps URLParams, cs chunks.ChunkStore) {
@@ -463,29 +617,4 @@ func handleBaseGet(w http.ResponseWriter, req *http.Request, ps URLParams, rt ch
 
 	w.Header().Add("Content-Type", "text/html")
 	fmt.Fprintf(w, nomsBaseHTML)
-}
-
-func assertMapOfStringToRefOfCommit(proposed, datasets types.Map, vr types.ValueReader) {
-	stopChan := make(chan struct{})
-	defer close(stopChan)
-	changes := make(chan types.ValueChanged)
-	go func() {
-		defer close(changes)
-		proposed.Diff(datasets, changes, stopChan)
-	}()
-	for change := range changes {
-		switch change.ChangeType {
-		case types.DiffChangeAdded, types.DiffChangeModified:
-			// Since this is a Map Diff, change.V is the key at which a change was detected.
-			// Go get the Value there, which should be a Ref<Value>, deref it, and then ensure the target is a Commit.
-			val := change.NewValue
-			ref, ok := val.(types.Ref)
-			if !ok {
-				d.Panic("Root of a Database must be a Map<String, Ref<Commit>>, but key %s maps to a %s", change.Key.(types.String), types.TypeOf(val).Describe())
-			}
-			if targetValue := ref.TargetValue(vr); !IsCommit(targetValue) {
-				d.Panic("Root of a Database must be a Map<String, Ref<Commit>>, not the ref at key %s points to a %s", change.Key.(types.String), types.TypeOf(targetValue).Describe())
-			}
-		}
-	}
 }

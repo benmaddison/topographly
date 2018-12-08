@@ -7,8 +7,8 @@ package nbs
 import (
 	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/d"
 )
 
 const concurrentCompactions = 5
@@ -86,16 +86,17 @@ func (ts tableSet) getMany(reqs []getRecord, foundChunks chan *chunks.Chunk, wg 
 }
 
 func (ts tableSet) calcReads(reqs []getRecord, blockSize uint64) (reads int, split, remaining bool) {
-	f := func(css chunkSources) (reads int, split, remaining bool) {
+	f := func(css chunkSources) (int, bool, bool) {
+		reads, split := 0, false
 		for _, haver := range css {
-			rds, remaining := haver.calcReads(reqs, blockSize)
+			rds, rmn := haver.calcReads(reqs, blockSize)
 			reads += rds
-			if !remaining {
-				return reads, split, remaining
+			if !rmn {
+				return reads, split, false
 			}
 			split = true
 		}
-		return reads, split, remaining
+		return reads, split, true
 	}
 	reads, split, remaining = f(ts.novel)
 	if remaining {
@@ -120,6 +121,18 @@ func (ts tableSet) uncompressedLen() uint64 {
 	f := func(css chunkSources) (data uint64) {
 		for _, haver := range css {
 			data += haver.uncompressedLen()
+		}
+		return
+	}
+	return f(ts.novel) + f(ts.upstream)
+}
+
+func (ts tableSet) physicalLen() uint64 {
+	f := func(css chunkSources) (data uint64) {
+		for _, haver := range css {
+			index := haver.index()
+			data += indexSize(index.chunkCount)
+			data += index.offsets[index.chunkCount-1] + (uint64(index.lengths[index.chunkCount-1]))
 		}
 		return
 	}
@@ -186,7 +199,7 @@ func (ts tableSet) Flatten() (flattened tableSet) {
 
 // Rebase returns a new tableSet holding the novel tables managed by |ts| and
 // those specified by |specs|.
-func (ts tableSet) Rebase(specs []tableSpec) tableSet {
+func (ts tableSet) Rebase(specs []tableSpec, stats *Stats) tableSet {
 	merged := tableSet{
 		novel:    make(chunkSources, 0, len(ts.novel)),
 		upstream: make(chunkSources, 0, len(specs)),
@@ -216,7 +229,7 @@ func (ts tableSet) Rebase(specs []tableSpec) tableSet {
 	for _, spec := range tablesToOpen {
 		wg.Add(1)
 		go func(idx int, spec tableSpec) {
-			merged.upstream[idx] = ts.p.Open(spec.name, spec.chunkCount)
+			merged.upstream[idx] = ts.p.Open(spec.name, spec.chunkCount, stats)
 			wg.Done()
 		}(i, spec)
 		i++

@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/constants"
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/constants"
+	"github.com/attic-labs/noms/go/d"
 	"github.com/julienschmidt/httprouter"
 )
 
@@ -76,6 +76,9 @@ func (s *RemoteDatabaseServer) Run() {
 	router.GET(constants.GraphQLPath, s.corsHandle(s.makeHandle(HandleGraphQL)))
 	router.POST(constants.GraphQLPath, s.corsHandle(s.makeHandle(HandleGraphQL)))
 	router.OPTIONS(constants.GraphQLPath, s.corsHandle(noopHandle))
+
+	router.GET(constants.StatsPath, s.corsHandle(s.makeHandle(HandleStats)))
+	router.OPTIONS(constants.StatsPath, s.corsHandle(noopHandle))
 
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

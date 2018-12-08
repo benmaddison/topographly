@@ -8,17 +8,15 @@ import (
 	"fmt"
 	"sort"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/d"
 )
 
 type Map struct {
-	seq orderedSequence
-	h   *hash.Hash
+	orderedSequence
 }
 
 func newMap(seq orderedSequence) Map {
-	return Map{seq, &hash.Hash{}}
+	return Map{seq}
 }
 
 func mapHashValueBytes(item sequenceItem, rv *rollingValueHasher) {
@@ -27,9 +25,9 @@ func mapHashValueBytes(item sequenceItem, rv *rollingValueHasher) {
 	hashValueBytes(entry.value, rv)
 }
 
-func NewMap(kv ...Value) Map {
+func NewMap(vrw ValueReadWriter, kv ...Value) Map {
 	entries := buildMapData(kv)
-	ch := newEmptyMapSequenceChunker(nil, nil)
+	ch := newEmptyMapSequenceChunker(vrw)
 
 	for _, entry := range entries {
 		ch.Append(entry)
@@ -46,28 +44,39 @@ func NewMap(kv ...Value) Map {
 // closed by the caller, a finished Map will be sent to the output channel. See
 // graph_builder.go for building collections with values that are not in order.
 func NewStreamingMap(vrw ValueReadWriter, kvs <-chan Value) <-chan Map {
-	var k Value
+	d.PanicIfTrue(vrw == nil)
+	return newStreamingMap(vrw, kvs, func(vrw ValueReadWriter, kvs <-chan Value, outChan chan<- Map) {
+		go readMapInput(vrw, kvs, outChan)
+	})
+}
+
+type streamingMapReadFunc func(vrw ValueReadWriter, kvs <-chan Value, outChan chan<- Map)
+
+func newStreamingMap(vrw ValueReadWriter, kvs <-chan Value, readFunc streamingMapReadFunc) <-chan Map {
 	outChan := make(chan Map, 1)
-	go func() {
-		defer close(outChan)
-		ch := newEmptyMapSequenceChunker(vrw, vrw)
-		var lastK Value
-		nextIsKey := true
-		for v := range kvs {
-			d.PanicIfTrue(v == nil)
-			if nextIsKey {
-				k = v
-				d.PanicIfFalse(lastK == nil || lastK.Less(k))
-				lastK = k
-				nextIsKey = false
-				continue
-			}
-			ch.Append(mapEntry{key: k, value: v})
-			nextIsKey = true
-		}
-		outChan <- newMap(ch.Done().(orderedSequence))
-	}()
+	readFunc(vrw, kvs, outChan)
 	return outChan
+}
+
+func readMapInput(vrw ValueReadWriter, kvs <-chan Value, outChan chan<- Map) {
+	defer close(outChan)
+	ch := newEmptyMapSequenceChunker(vrw)
+	var lastK Value
+	nextIsKey := true
+	var k Value
+	for v := range kvs {
+		d.PanicIfTrue(v == nil)
+		if nextIsKey {
+			k = v
+			d.PanicIfFalse(lastK == nil || lastK.Less(k))
+			lastK = k
+			nextIsKey = false
+			continue
+		}
+		ch.Append(mapEntry{key: k, value: v})
+		nextIsKey = true
+	}
+	outChan <- newMap(ch.Done().(orderedSequence))
 }
 
 // Diff computes the diff from |last| to |m| using the top-down algorithm,
@@ -77,7 +86,7 @@ func (m Map) Diff(last Map, changes chan<- ValueChanged, closeChan <-chan struct
 	if m.Equals(last) {
 		return
 	}
-	orderedSequenceDiffTopDown(last.seq, m.seq, changes, closeChan)
+	orderedSequenceDiffTopDown(last.orderedSequence, m.orderedSequence, changes, closeChan)
 }
 
 // DiffHybrid computes the diff from |last| to |m| using a hybrid algorithm
@@ -86,7 +95,7 @@ func (m Map) DiffHybrid(last Map, changes chan<- ValueChanged, closeChan <-chan 
 	if m.Equals(last) {
 		return
 	}
-	orderedSequenceDiffBest(last.seq, m.seq, changes, closeChan)
+	orderedSequenceDiffBest(last.orderedSequence, m.orderedSequence, changes, closeChan)
 }
 
 // DiffLeftRight computes the diff from |last| to |m| using a left-to-right
@@ -96,69 +105,29 @@ func (m Map) DiffLeftRight(last Map, changes chan<- ValueChanged, closeChan <-ch
 	if m.Equals(last) {
 		return
 	}
-	orderedSequenceDiffLeftRight(last.seq, m.seq, changes, closeChan)
+	orderedSequenceDiffLeftRight(last.orderedSequence, m.orderedSequence, changes, closeChan)
 }
 
 // Collection interface
-func (m Map) Len() uint64 {
-	return m.seq.numLeaves()
-}
 
-func (m Map) Empty() bool {
-	return m.Len() == 0
-}
-
-func (m Map) sequence() sequence {
-	return m.seq
-}
-
-func (m Map) hashPointer() *hash.Hash {
-	return m.h
+func (m Map) asSequence() sequence {
+	return m.orderedSequence
 }
 
 // Value interface
-func (m Map) Value(vrw ValueReadWriter) Value {
+func (m Map) Value() Value {
 	return m
 }
 
-func (m Map) Equals(other Value) bool {
-	return m.Hash() == other.Hash()
-}
-
-func (m Map) Less(other Value) bool {
-	return valueLess(m, other)
-}
-
-func (m Map) Hash() hash.Hash {
-	if m.h.IsEmpty() {
-		*m.h = getHash(m)
-	}
-
-	return *m.h
-}
-
 func (m Map) WalkValues(cb ValueCallback) {
-	m.IterAll(func(k, v Value) {
-		cb(k)
+	iterAll(m, func(v Value, idx uint64) {
 		cb(v)
 	})
 	return
 }
 
-func (m Map) WalkRefs(cb RefCallback) {
-	m.seq.WalkRefs(cb)
-}
-
-func (m Map) typeOf() *Type {
-	return m.seq.typeOf()
-}
-
-func (m Map) Kind() NomsKind {
-	return MapKind
-}
-
 func (m Map) firstOrLast(last bool) (Value, Value) {
-	cur := newCursorAt(m.seq, emptyKey, false, last, false)
+	cur := newCursorAt(m.orderedSequence, emptyKey, false, last)
 	if !cur.valid() {
 		return nil, nil
 	}
@@ -179,13 +148,13 @@ func (m Map) At(idx uint64) (key, value Value) {
 		panic(fmt.Errorf("Out of bounds: %d >= %d", idx, m.Len()))
 	}
 
-	cur := newCursorAtIndex(m.seq, idx, false)
+	cur := newCursorAtIndex(m.orderedSequence, idx)
 	entry := cur.current().(mapEntry)
 	return entry.key, entry.value
 }
 
 func (m Map) MaybeGet(key Value) (v Value, ok bool) {
-	cur := newCursorAtValue(m.seq, key, false, false, false)
+	cur := newCursorAtValue(m.orderedSequence, key, false, false)
 	if !cur.valid() {
 		return nil, false
 	}
@@ -198,7 +167,7 @@ func (m Map) MaybeGet(key Value) (v Value, ok bool) {
 }
 
 func (m Map) Has(key Value) bool {
-	cur := newCursorAtValue(m.seq, key, false, false, false)
+	cur := newCursorAtValue(m.orderedSequence, key, false, false)
 	if !cur.valid() {
 		return false
 	}
@@ -214,7 +183,7 @@ func (m Map) Get(key Value) Value {
 type mapIterCallback func(key, value Value) (stop bool)
 
 func (m Map) Iter(cb mapIterCallback) {
-	cur := newCursorAt(m.seq, emptyKey, false, false, false)
+	cur := newCursorAt(m.orderedSequence, emptyKey, false, false)
 	cur.iter(func(v interface{}) bool {
 		entry := v.(mapEntry)
 		return cb(entry.key, entry.value)
@@ -239,29 +208,33 @@ func (m Map) Iterator() MapIterator {
 
 func (m Map) IteratorAt(pos uint64) MapIterator {
 	return &mapIterator{
-		cursor: newCursorAtIndex(m.seq, pos, false),
+		cursor: newCursorAtIndex(m.orderedSequence, pos),
 	}
 }
 
 func (m Map) IteratorFrom(key Value) MapIterator {
 	return &mapIterator{
-		cursor: newCursorAtValue(m.seq, key, false, false, false),
+		cursor: newCursorAtValue(m.orderedSequence, key, false, false),
 	}
 }
 
 type mapIterAllCallback func(key, value Value)
 
 func (m Map) IterAll(cb mapIterAllCallback) {
-	cur := newCursorAt(m.seq, emptyKey, false, false, true)
-	cur.iter(func(v interface{}) bool {
-		entry := v.(mapEntry)
-		cb(entry.key, entry.value)
-		return false
+	var k Value
+	iterAll(m, func(v Value, idx uint64) {
+		if k != nil {
+			cb(k, v)
+			k = nil
+		} else {
+			k = v
+		}
 	})
+	d.PanicIfFalse(k == nil)
 }
 
 func (m Map) IterFrom(start Value, cb mapIterCallback) {
-	cur := newCursorAtValue(m.seq, start, false, false, false)
+	cur := newCursorAtValue(m.orderedSequence, start, false, false)
 	cur.iter(func(v interface{}) bool {
 		entry := v.(mapEntry)
 		return cb(entry.key, entry.value)
@@ -277,8 +250,7 @@ func buildMapData(values []Value) mapEntrySlice {
 		return mapEntrySlice{}
 	}
 
-	// Sadly, d.Chk.Equals() costs too much. BUG #83
-	if 0 != len(values)%2 {
+	if len(values)%2 != 0 {
 		d.Panic("Must specify even number of key/value pairs")
 	}
 	kvs := make(mapEntrySlice, len(values)/2)
@@ -305,9 +277,7 @@ func buildMapData(values []Value) mapEntrySlice {
 	return append(uniqueSorted, last)
 }
 
-// If |vw| is not nil, chunks will be eagerly written as they're created. Otherwise they are
-// written when the root is written.
-func makeMapLeafChunkFn(vr ValueReader) makeChunkFn {
+func makeMapLeafChunkFn(vrw ValueReadWriter) makeChunkFn {
 	return func(level uint64, items []sequenceItem) (Collection, orderedKey, uint64) {
 		d.PanicIfFalse(level == 0)
 		mapData := make([]mapEntry, len(items), len(items))
@@ -320,7 +290,7 @@ func makeMapLeafChunkFn(vr ValueReader) makeChunkFn {
 			mapData[i] = entry
 		}
 
-		m := newMap(newMapLeafSequence(vr, mapData...))
+		m := newMap(newMapLeafSequence(vrw, mapData...))
 		var key orderedKey
 		if len(mapData) > 0 {
 			key = newOrderedKey(mapData[len(mapData)-1].key)
@@ -329,6 +299,6 @@ func makeMapLeafChunkFn(vr ValueReader) makeChunkFn {
 	}
 }
 
-func newEmptyMapSequenceChunker(vr ValueReader, vw ValueWriter) *sequenceChunker {
-	return newEmptySequenceChunker(vr, vw, makeMapLeafChunkFn(vr), newOrderedMetaSequenceChunkFn(MapKind, vr), mapHashValueBytes)
+func newEmptyMapSequenceChunker(vrw ValueReadWriter) *sequenceChunker {
+	return newEmptySequenceChunker(vrw, makeMapLeafChunkFn(vrw), newOrderedMetaSequenceChunkFn(MapKind, vrw), mapHashValueBytes)
 }

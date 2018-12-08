@@ -26,6 +26,9 @@ const (
 
 	TypeKind
 	UnionKind
+
+	// Internal to decoder
+	hashKind
 )
 
 var KindToString = map[NomsKind]string{
@@ -62,4 +65,8 @@ func IsPrimitiveKind(k NomsKind) bool {
 // isKindOrderedByValue determines if a value is ordered by its value instead of its hash.
 func isKindOrderedByValue(k NomsKind) bool {
 	return k <= StringKind
+}
+
+func (k NomsKind) writeTo(w nomsWriter) {
+	w.writeUint8(uint8(k))
 }

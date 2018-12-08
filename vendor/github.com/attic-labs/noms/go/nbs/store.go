@@ -10,10 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/constants"
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/constants"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
+	humanize "github.com/dustin/go-humanize"
 )
 
 // The root of a Noms Chunk Store is stored in a 'manifest', along with the
@@ -29,36 +30,34 @@ const (
 
 	defaultIndexCacheSize    = (1 << 20) * 8 // 8MB
 	defaultManifestCacheSize = 1 << 23       // 8MB
+	preflushChunkCount       = 8
 )
 
 var (
 	cacheOnce           = sync.Once{}
 	globalIndexCache    *indexCache
-	makeCachingManifest func(manifest) cachingManifest
+	makeManifestManager func(manifest) manifestManager
 	globalFDCache       *fdCache
-	globalConjoiner     conjoiner
 )
 
 func makeGlobalCaches() {
 	globalIndexCache = newIndexCache(defaultIndexCacheSize)
 	globalFDCache = newFDCache(defaultMaxTables)
-	globalConjoiner = newAsyncConjoiner(defaultMaxTables)
 
 	manifestCache := newManifestCache(defaultManifestCacheSize)
-	makeCachingManifest = func(mm manifest) cachingManifest { return cachingManifest{mm, manifestCache} }
+	manifestLocks := newManifestLocks()
+	makeManifestManager = func(m manifest) manifestManager { return manifestManager{m, manifestCache, manifestLocks} }
 }
 
 type NomsBlockStore struct {
-	mm           cachingManifest
-	p            tablePersister
-	c            conjoiner
-	manifestLock addr
-	nomsVersion  string
+	mm manifestManager
+	p  tablePersister
+	c  conjoiner
 
-	mu     sync.RWMutex // protects the following state
-	mt     *memTable
-	tables tableSet
-	root   hash.Hash
+	mu       sync.RWMutex // protects the following state
+	mt       *memTable
+	tables   tableSet
+	upstream manifestContents
 
 	mtSize   uint64
 	putCount uint64
@@ -68,71 +67,68 @@ type NomsBlockStore struct {
 
 func NewAWSStore(table, ns, bucket string, s3 s3svc, ddb ddbsvc, memTableSize uint64) *NomsBlockStore {
 	cacheOnce.Do(makeGlobalCaches)
-	p := &s3TablePersister{
+	readRateLimiter := make(chan struct{}, 32)
+	p := &awsTablePersister{
 		s3,
 		bucket,
-		defaultS3PartSize,
-		minS3PartSize,
-		maxS3PartSize,
-		globalIndexCache,
-		make(chan struct{}, 32),
+		readRateLimiter,
 		nil,
+		&ddbTableStore{ddb, table, readRateLimiter, nil},
+		awsLimits{defaultS3PartSize, minS3PartSize, maxS3PartSize, maxDynamoItemSize, maxDynamoChunks},
+		globalIndexCache,
 	}
-	mm := makeCachingManifest(newDynamoManifest(table, ns, ddb))
-	return newNomsBlockStore(mm, p, globalConjoiner, memTableSize)
+	mm := makeManifestManager(newDynamoManifest(table, ns, ddb))
+	return newNomsBlockStore(mm, p, inlineConjoiner{defaultMaxTables}, memTableSize)
 }
 
 func NewLocalStore(dir string, memTableSize uint64) *NomsBlockStore {
 	cacheOnce.Do(makeGlobalCaches)
 	d.PanicIfError(checkDir(dir))
 
-	mm := makeCachingManifest(fileManifest{dir})
+	mm := makeManifestManager(fileManifest{dir})
 	p := newFSTablePersister(dir, globalFDCache, globalIndexCache)
-	return newNomsBlockStore(mm, p, globalConjoiner, memTableSize)
+	return newNomsBlockStore(mm, p, inlineConjoiner{defaultMaxTables}, memTableSize)
 }
 
-func newNomsBlockStore(mm cachingManifest, p tablePersister, c conjoiner, memTableSize uint64) *NomsBlockStore {
+func newNomsBlockStore(mm manifestManager, p tablePersister, c conjoiner, memTableSize uint64) *NomsBlockStore {
 	if memTableSize == 0 {
 		memTableSize = defaultMemTableSize
 	}
 	nbs := &NomsBlockStore{
-		mm:          mm,
-		p:           p,
-		c:           c,
-		tables:      newTableSet(p),
-		nomsVersion: constants.NomsVersion,
-		mtSize:      memTableSize,
-		stats:       NewStats(),
+		mm:       mm,
+		p:        p,
+		c:        c,
+		tables:   newTableSet(p),
+		upstream: manifestContents{vers: constants.NomsVersion},
+		mtSize:   memTableSize,
+		stats:    NewStats(),
 	}
 
 	t1 := time.Now()
-	defer func() {
-		nbs.stats.OpenLatency.SampleTimeSince(t1)
-	}()
+	defer nbs.stats.OpenLatency.SampleTimeSince(t1)
 
-	if exists, contents := nbs.mm.ParseIfExists(nbs.stats, nil); exists {
-		nbs.nomsVersion, nbs.manifestLock, nbs.root = contents.vers, contents.lock, contents.root
-		nbs.tables = nbs.tables.Rebase(contents.specs)
+	if exists, contents := nbs.mm.Fetch(nbs.stats); exists {
+		nbs.upstream = contents
+		nbs.tables = nbs.tables.Rebase(contents.specs, nbs.stats)
 	}
 
 	return nbs
 }
 
-func newNomsBlockStoreWithContents(mm cachingManifest, mc manifestContents, p tablePersister, c conjoiner, memTableSize uint64) *NomsBlockStore {
+func newNomsBlockStoreWithContents(mm manifestManager, mc manifestContents, p tablePersister, c conjoiner, memTableSize uint64) *NomsBlockStore {
 	if memTableSize == 0 {
 		memTableSize = defaultMemTableSize
 	}
+	stats := NewStats()
 	return &NomsBlockStore{
 		mm:     mm,
 		p:      p,
 		c:      c,
 		mtSize: memTableSize,
-		stats:  NewStats(),
+		stats:  stats,
 
-		nomsVersion:  mc.vers,
-		manifestLock: mc.lock,
-		root:         mc.root,
-		tables:       newTableSet(p).Rebase(mc.specs),
+		upstream: mc,
+		tables:   newTableSet(p).Rebase(mc.specs, stats),
 	}
 }
 
@@ -353,28 +349,26 @@ func toHasRecords(hashes hash.HashSet) []hasRecord {
 func (nbs *NomsBlockStore) Rebase() {
 	nbs.mu.Lock()
 	defer nbs.mu.Unlock()
-	if exists, contents := nbs.mm.ParseIfExists(nbs.stats, nil); exists {
-		nbs.nomsVersion, nbs.manifestLock, nbs.root = contents.vers, contents.lock, contents.root
-		nbs.tables = nbs.tables.Rebase(contents.specs)
+	if exists, contents := nbs.mm.Fetch(nbs.stats); exists {
+		nbs.upstream = contents
+		nbs.tables = nbs.tables.Rebase(contents.specs, nbs.stats)
 	}
 }
 
 func (nbs *NomsBlockStore) Root() hash.Hash {
 	nbs.mu.RLock()
 	defer nbs.mu.RUnlock()
-	return nbs.root
+	return nbs.upstream.root
 }
 
 func (nbs *NomsBlockStore) Commit(current, last hash.Hash) bool {
 	t1 := time.Now()
-	defer func() {
-		nbs.stats.CommitLatency.SampleTimeSince(t1)
-	}()
+	defer nbs.stats.CommitLatency.SampleTimeSince(t1)
 
 	anyPossiblyNovelChunks := func() bool {
 		nbs.mu.Lock()
 		defer nbs.mu.Unlock()
-		return nbs.mt != nil || len(nbs.tables.novel) > 0
+		return nbs.mt != nil || nbs.tables.Novel() > 0
 	}
 
 	if !anyPossiblyNovelChunks() && current == last {
@@ -382,6 +376,24 @@ func (nbs *NomsBlockStore) Commit(current, last hash.Hash) bool {
 		return true
 	}
 
+	func() {
+		// This is unfortunate. We want to serialize commits to the same store
+		// so that we avoid writing a bunch of unreachable small tables which result
+		// from optismistic lock failures. However, this means that the time to
+		// write tables is included in "commit" time and if all commits are
+		// serialized, it means alot more waiting. Allow "non-trivial" tables to be
+		// persisted outside of the commit-lock.
+		nbs.mu.Lock()
+		defer nbs.mu.Unlock()
+
+		if nbs.mt != nil && nbs.mt.count() > preflushChunkCount {
+			nbs.tables = nbs.tables.Prepend(nbs.mt, nbs.stats)
+			nbs.mt = nil
+		}
+	}()
+
+	nbs.mm.LockForUpdate()
+	defer nbs.mm.UnlockForUpdate()
 	for {
 		if err := nbs.updateManifest(current, last); err == nil {
 			return true
@@ -400,14 +412,13 @@ var (
 func (nbs *NomsBlockStore) updateManifest(current, last hash.Hash) error {
 	nbs.mu.Lock()
 	defer nbs.mu.Unlock()
-	if nbs.root != last {
+	if nbs.upstream.root != last {
 		return errLastRootMismatch
 	}
 
 	handleOptimisticLockFailure := func(upstream manifestContents) error {
-		nbs.manifestLock = upstream.lock
-		nbs.root = upstream.root
-		nbs.tables = nbs.tables.Rebase(upstream.specs)
+		nbs.upstream = upstream
+		nbs.tables = nbs.tables.Rebase(upstream.specs, nbs.stats)
 
 		if last != upstream.root {
 			return errOptimisticLockFailedRoot
@@ -415,9 +426,9 @@ func (nbs *NomsBlockStore) updateManifest(current, last hash.Hash) error {
 		return errOptimisticLockFailedTables
 	}
 
-	if upstream, doomed := nbs.mm.updateWillFail(nbs.manifestLock); doomed {
+	if cached, doomed := nbs.mm.updateWillFail(nbs.upstream.lock); doomed {
 		// Pre-emptive optimistic lock failure. Someone else in-process moved to the root, the set of tables, or both out from under us.
-		return handleOptimisticLockFailure(upstream)
+		return handleOptimisticLockFailure(cached)
 	}
 
 	if nbs.mt != nil && nbs.mt.count() > 0 {
@@ -426,13 +437,8 @@ func (nbs *NomsBlockStore) updateManifest(current, last hash.Hash) error {
 	}
 
 	if nbs.c.ConjoinRequired(nbs.tables) {
-		nbs.c.Conjoin(nbs.mm, nbs.p, nbs.tables.Novel(), nbs.stats)
-		exists, upstream := nbs.mm.ParseIfExists(nbs.stats, nil)
-		d.PanicIfFalse(exists)
-
-		nbs.manifestLock = upstream.lock
-		nbs.root = upstream.root
-		nbs.tables = nbs.tables.Rebase(upstream.specs)
+		nbs.upstream = nbs.c.Conjoin(nbs.upstream, nbs.mm, nbs.p, nbs.stats)
+		nbs.tables = nbs.tables.Rebase(nbs.upstream.specs, nbs.stats)
 		return errOptimisticLockFailedTables
 	}
 
@@ -443,19 +449,19 @@ func (nbs *NomsBlockStore) updateManifest(current, last hash.Hash) error {
 		lock:  generateLockHash(current, specs),
 		specs: specs,
 	}
-	upstream := nbs.mm.Update(nbs.manifestLock, newContents, nbs.stats, nil)
+	upstream := nbs.mm.Update(nbs.upstream.lock, newContents, nbs.stats, nil)
 	if newContents.lock != upstream.lock {
 		// Optimistic lock failure. Someone else moved to the root, the set of tables, or both out from under us.
 		return handleOptimisticLockFailure(upstream)
 	}
 
+	nbs.upstream = newContents
 	nbs.tables = nbs.tables.Flatten()
-	nbs.nomsVersion, nbs.manifestLock, nbs.root = constants.NomsVersion, newContents.lock, current
 	return nil
 }
 
 func (nbs *NomsBlockStore) Version() string {
-	return nbs.nomsVersion
+	return nbs.upstream.vers
 }
 
 func (nbs *NomsBlockStore) Close() (err error) {
@@ -464,4 +470,11 @@ func (nbs *NomsBlockStore) Close() (err error) {
 
 func (nbs *NomsBlockStore) Stats() interface{} {
 	return *nbs.stats
+}
+
+func (nbs *NomsBlockStore) StatsSummary() string {
+	nbs.mu.Lock()
+	defer nbs.mu.Unlock()
+
+	return fmt.Sprintf("Root: %s; Chunk Count %d; Physical Bytes %s", nbs.upstream.root, nbs.tables.count(), humanize.Bytes(nbs.tables.physicalLen()))
 }

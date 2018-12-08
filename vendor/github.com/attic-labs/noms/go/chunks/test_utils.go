@@ -5,9 +5,9 @@
 package chunks
 
 import (
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
-	"github.com/attic-labs/testify/assert"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
+	"github.com/stretchr/testify/assert"
 )
 
 func assertInputInStore(input string, h hash.Hash, s ChunkStore, assert *assert.Assertions) {

@@ -8,8 +8,8 @@ package datas
 import (
 	"io"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/types"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/types"
 )
 
 // Database provides versioned storage for noms values. While Values can be
@@ -103,6 +103,13 @@ type Database interface {
 	// ChunkStore that backs this Database instance. The type is
 	// implementation-dependent, and impls may return nil
 	Stats() interface{}
+
+	// StatsSummary may return a string containing summarized statistics for
+	// the ChunkStore that backs this Database. It must return "Unsupported"
+	// if this operation is not supported.
+	StatsSummary() string
+
+	Flush()
 
 	// chunkStore returns the ChunkStore used to read and write
 	// groups of values to the database efficiently. This interface is a low-

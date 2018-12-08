@@ -5,7 +5,7 @@
 package types
 
 import (
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 // SetIterator defines methods that can be used to efficiently iterate through a set in 'Noms-defined'
@@ -54,7 +54,7 @@ func (si *setIterator) SkipTo(v Value) Value {
 			return si.Next()
 		}
 
-		si.cursor, _ = si.s.getCursorAtValue(v, true)
+		si.cursor = newCursorAtValue(si.s.orderedSequence, v, true, false)
 		if si.cursor.valid() {
 			si.currentValue = si.cursor.current().(Value)
 			si.cursor.advance()

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/hash"
 	humanize "github.com/dustin/go-humanize"
 	"github.com/golang/snappy"
 )
@@ -41,7 +41,7 @@ func writePtreeStats(w io.Writer, v Value, vr ValueReader) {
 	fmt.Fprintf(w, "Kind: %s\n", v.Kind().String())
 	fmt.Fprintf(w, treeLevelHeader)
 
-	level := int64(v.(Collection).sequence().treeLevel())
+	level := int64(v.(Collection).asSequence().treeLevel())
 	nodes := ValueSlice{v}
 
 	// TODO: For level 0, use NBS to fetch leaf sizes without actually reading leaf data.
@@ -58,7 +58,7 @@ func writePtreeStats(w io.Writer, v Value, vr ValueReader) {
 				})
 			}
 
-			s := n.(Collection).sequence()
+			s := n.(Collection).asSequence()
 			valueCount += uint64(s.seqLen())
 
 			h := n.Hash()
@@ -96,28 +96,11 @@ func compressedSize(v Value) uint64 {
 }
 
 func loadNextLevel(refs RefSlice, vr ValueReader) ValueSlice {
-	values := make(ValueSlice, len(refs))
-	hs := make(hash.HashSet, len(refs))
-	for _, r := range refs {
-		hs.Insert(r.TargetHash())
+	hs := make(hash.HashSlice, len(refs))
+	for i, r := range refs {
+		hs[i] = r.TargetHash()
 	}
 
 	// Fetch committed child sequences in a single batch
-	valueChan := make(chan Value, len(hs))
-	go func() {
-		vr.ReadManyValues(hs, valueChan)
-		close(valueChan)
-	}()
-
-	vm := make(map[hash.Hash]Value, len(hs))
-	for v := range valueChan {
-		vm[v.Hash()] = v
-	}
-
-	for i, r := range refs {
-		v := vm[r.TargetHash()]
-		values[i] = vm[v.Hash()]
-	}
-
-	return values
+	return vr.ReadManyValues(hs)
 }

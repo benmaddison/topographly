@@ -7,7 +7,7 @@ package types
 import (
 	"sort"
 
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/hash"
 )
 
 // RefByHeight implements sort.Interface to order by increasing HeightOrder(). It uses increasing order because this causes repeated pushes and pops of the 'tallest' Refs to re-use memory, avoiding reallocations.
@@ -80,6 +80,9 @@ func (h *RefByHeight) PopRefsOfHeight(height uint64) (refs RefSlice) {
 
 // MaxHeight returns the height of the 'tallest' Ref in h.
 func (h RefByHeight) MaxHeight() uint64 {
+	if h.Empty() {
+		return 0
+	}
 	return h.PeekEnd().Height()
 }
 

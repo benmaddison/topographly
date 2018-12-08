@@ -8,8 +8,8 @@ import (
 	"bytes"
 	"encoding/binary"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
 )
 
 type opCacheComparer struct{}
@@ -124,7 +124,7 @@ func compareEncodedNomsValues(a, b []byte) int {
 	}
 	aKind, bKind := NomsKind(a[0]), NomsKind(b[0])
 	if aKind != bKind {
-		d.Panic("compareEncodedNomsValues, aKind:", aKind, "!= bKind:", bKind)
+		d.Panic("compareEncodedNomsValues, aKind: %s != bKind: %s", aKind, bKind)
 	}
 
 	switch aKind {

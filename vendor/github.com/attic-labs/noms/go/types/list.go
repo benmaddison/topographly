@@ -5,8 +5,9 @@
 package types
 
 import (
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"sync/atomic"
+
+	"github.com/attic-labs/noms/go/d"
 )
 
 // List represents a list or an array of Noms values. A list can contain zero or more values of zero
@@ -19,18 +20,17 @@ import (
 //
 // Lists, like all Noms values are immutable so the "mutation" methods return a new list.
 type List struct {
-	seq sequence
-	h   *hash.Hash
+	sequence
 }
 
 func newList(seq sequence) List {
-	return List{seq, &hash.Hash{}}
+	return List{seq}
 }
 
 // NewList creates a new List where the type is computed from the elements in the list, populated
 // with values, chunking if and when needed.
-func NewList(values ...Value) List {
-	ch := newEmptyListSequenceChunker(nil, nil)
+func NewList(vrw ValueReadWriter, values ...Value) List {
+	ch := newEmptyListSequenceChunker(vrw)
 	for _, v := range values {
 		ch.Append(v)
 	}
@@ -44,7 +44,7 @@ func NewStreamingList(vrw ValueReadWriter, values <-chan Value) <-chan List {
 	out := make(chan List, 1)
 	go func() {
 		defer close(out)
-		ch := newEmptyListSequenceChunker(vrw, vrw)
+		ch := newEmptyListSequenceChunker(vrw)
 		for v := range values {
 			ch.Append(v)
 		}
@@ -59,107 +59,44 @@ func (l List) Edit() *ListEditor {
 
 // Collection interface
 
-// Len returns the number of elements in the list.
-func (l List) Len() uint64 {
-	return l.seq.numLeaves()
-}
-
-// Empty returns true if the list is empty (length is zero).
-func (l List) Empty() bool {
-	return l.Len() == 0
-}
-
-func (l List) sequence() sequence {
-	return l.seq
-}
-
-func (l List) hashPointer() *hash.Hash {
-	return l.h
+func (l List) asSequence() sequence {
+	return l.sequence
 }
 
 // Value interface
-func (l List) Value(vrw ValueReadWriter) Value {
+func (l List) Value() Value {
 	return l
 }
 
-func (l List) Equals(other Value) bool {
-	return l.Hash() == other.Hash()
-}
-
-func (l List) Less(other Value) bool {
-	return valueLess(l, other)
-}
-
-func (l List) Hash() hash.Hash {
-	if l.h.IsEmpty() {
-		*l.h = getHash(l)
-	}
-
-	return *l.h
-}
-
 func (l List) WalkValues(cb ValueCallback) {
-	l.IterAll(func(v Value, idx uint64) {
+	iterAll(l, func(v Value, idx uint64) {
 		cb(v)
 	})
-}
-
-func (l List) WalkRefs(cb RefCallback) {
-	l.seq.WalkRefs(cb)
-}
-
-func (l List) typeOf() *Type {
-	return l.seq.typeOf()
-}
-
-func (l List) Kind() NomsKind {
-	return ListKind
 }
 
 // Get returns the value at the given index. If this list has been chunked then this will have to
 // descend into the prolly-tree which leads to Get being O(depth).
 func (l List) Get(idx uint64) Value {
 	d.PanicIfFalse(idx < l.Len())
-	cur := newCursorAtIndex(l.seq, idx, false)
+	cur := newCursorAtIndex(l.sequence, idx)
 	return cur.current().(Value)
-}
-
-type MapFunc func(v Value, index uint64) interface{}
-
-// Deprecated: This API may change in the future. Use IterAll or Iterator instead.
-func (l List) Map(mf MapFunc) []interface{} {
-	// TODO: This is bad API. It should have returned another List.
-	// https://github.com/attic-labs/noms/issues/2557
-	idx := uint64(0)
-	cur := newCursorAtIndex(l.seq, idx, true)
-
-	results := make([]interface{}, 0, l.Len())
-	cur.iter(func(v interface{}) bool {
-		res := mf(v.(Value), uint64(idx))
-		results = append(results, res)
-		idx++
-		return false
-	})
-	return results
 }
 
 // Concat returns a new List comprised of this joined with other. It only needs
 // to visit the rightmost prolly tree chunks of this List, and the leftmost
 // prolly tree chunks of other, so it's efficient.
 func (l List) Concat(other List) List {
-	seq := concat(l.seq, other.seq, func(cur *sequenceCursor, vr ValueReader) *sequenceChunker {
-		return l.newChunker(cur, vr)
+	seq := concat(l.sequence, other.sequence, func(cur *sequenceCursor, vrw ValueReadWriter) *sequenceChunker {
+		return l.newChunker(cur, vrw)
 	})
 	return newList(seq)
 }
 
-type listIterFunc func(v Value, index uint64) (stop bool)
-
 // Iter iterates over the list and calls f for every element in the list. If f returns true then the
 // iteration stops.
-func (l List) Iter(f listIterFunc) {
+func (l List) Iter(f func(v Value, index uint64) (stop bool)) {
 	idx := uint64(0)
-	cur := newCursorAtIndex(l.seq, idx, false)
+	cur := newCursorAtIndex(l.sequence, idx)
 	cur.iter(func(v interface{}) bool {
 		if f(v.(Value), uint64(idx)) {
 			return true
@@ -169,20 +106,105 @@ func (l List) Iter(f listIterFunc) {
 	})
 }
 
-type listIterAllFunc func(v Value, index uint64)
+func (l List) IterRange(startIdx, endIdx uint64, f func(v Value, idx uint64)) {
+	idx := uint64(startIdx)
+	cb := func(v Value) {
+		f(v, idx)
+		idx++
+	}
+	iterRange(l, startIdx, endIdx, cb)
+}
 
 // IterAll iterates over the list and calls f for every element in the list. Unlike Iter there is no
 // way to stop the iteration and all elements are visited.
-func (l List) IterAll(f listIterAllFunc) {
-	// TODO: Consider removing this and have Iter behave like IterAll.
-	// https://github.com/attic-labs/noms/issues/2558
-	idx := uint64(0)
-	cur := newCursorAtIndex(l.seq, idx, true)
-	cur.iter(func(v interface{}) bool {
-		f(v.(Value), uint64(idx))
-		idx++
-		return false
-	})
+func (l List) IterAll(f func(v Value, index uint64)) {
+	iterAll(l, f)
+}
+
+func iterAll(col Collection, f func(v Value, index uint64)) {
+	concurrency := 6
+	vcChan := make(chan chan Value, concurrency)
+
+	// Target reading data in |targetBatchBytes| per thread. We don't know how
+	// many bytes each value is, so update |estimatedNumValues| as data is read.
+	targetBatchBytes := 1 << 23 // 8MB
+	estimatedNumValues := uint64(1000)
+
+	go func() {
+		for idx, l := uint64(0), col.Len(); idx < l; {
+			numValues := atomic.LoadUint64(&estimatedNumValues)
+
+			start := idx
+			blockLength := l - start
+			if blockLength > numValues {
+				blockLength = numValues
+			}
+			idx += blockLength
+
+			vc := make(chan Value)
+			vcChan <- vc
+
+			go func() {
+				numBytes := iterRange(col, start, start+blockLength, func(v Value) {
+					vc <- v
+				})
+				close(vc)
+
+				// Adjust the estimated number of values to try to read
+				// |targetBatchBytes| next time.
+				if numValues == blockLength {
+					scale := float64(targetBatchBytes) / float64(numBytes)
+					atomic.StoreUint64(&estimatedNumValues, uint64(float64(numValues)*scale))
+				}
+			}()
+		}
+		close(vcChan)
+	}()
+
+	// Ensure read-ahead goroutines can exit, because the `range` below might not
+	// finish if an |f| callback panics.
+	defer func() {
+		for vc := range vcChan {
+			close(vc)
+		}
+	}()
+
+	i := uint64(0)
+	for vc := range vcChan {
+		for v := range vc {
+			f(v, i)
+			i++
+		}
+	}
+}
+
+func iterRange(col Collection, startIdx, endIdx uint64, cb func(v Value)) (numBytes uint64) {
+	l := col.Len()
+	d.PanicIfTrue(startIdx > endIdx || endIdx > l)
+	if startIdx == endIdx {
+		return
+	}
+
+	leaves, localStart := LoadLeafNodes([]Collection{col}, startIdx, endIdx)
+	endIdx = localStart + endIdx - startIdx
+	startIdx = localStart
+	numValues := 0
+	valuesPerIdx := uint64(getValuesPerIdx(col.Kind()))
+
+	for _, leaf := range leaves {
+		seq := leaf.asSequence()
+		values := seq.valuesSlice(startIdx, endIdx)
+		numValues += len(values)
+
+		for _, v := range values {
+			cb(v)
+		}
+
+		endIdx = endIdx - uint64(len(values))/valuesPerIdx - startIdx
+		startIdx = 0
+		numBytes += uint64(len(seq.valueBytes())) // note: should really only include |values|
+	}
+	return
 }
 
 // Iterator returns a ListIterator which can be used to iterate efficiently over a list.
@@ -194,7 +216,7 @@ func (l List) Iterator() ListIterator {
 // have reached its end on creation.
 func (l List) IteratorAt(index uint64) ListIterator {
 	return ListIterator{
-		newCursorAtIndex(l.seq, index, false),
+		newCursorAtIndex(l.sequence, index),
 	}
 }
 
@@ -222,16 +244,14 @@ func (l List) DiffWithLimit(last List, changes chan<- Splice, closeChan <-chan s
 		return
 	}
 
-	indexedSequenceDiff(last.seq, 0, l.seq, 0, changes, closeChan, maxSpliceMatrixSize)
+	indexedSequenceDiff(last.sequence, 0, l.sequence, 0, changes, closeChan, maxSpliceMatrixSize)
 }
 
-func (l List) newChunker(cur *sequenceCursor, vr ValueReader) *sequenceChunker {
-	return newSequenceChunker(cur, 0, vr, nil, makeListLeafChunkFn(vr), newIndexedMetaSequenceChunkFn(ListKind, vr), hashValueBytes)
+func (l List) newChunker(cur *sequenceCursor, vrw ValueReadWriter) *sequenceChunker {
+	return newSequenceChunker(cur, 0, vrw, makeListLeafChunkFn(vrw), newIndexedMetaSequenceChunkFn(ListKind, vrw), hashValueBytes)
 }
 
-// If |sink| is not nil, chunks will be eagerly written as they're created. Otherwise they are
-// written when the root is written.
-func makeListLeafChunkFn(vr ValueReader) makeChunkFn {
+func makeListLeafChunkFn(vrw ValueReadWriter) makeChunkFn {
 	return func(level uint64, items []sequenceItem) (Collection, orderedKey, uint64) {
 		d.PanicIfFalse(level == 0)
 		values := make([]Value, len(items))
@@ -240,11 +260,11 @@ func makeListLeafChunkFn(vr ValueReader) makeChunkFn {
 			values[i] = v.(Value)
 		}
 
-		list := newList(newListLeafSequence(vr, values...))
+		list := newList(newListLeafSequence(vrw, values...))
 		return list, orderedKeyFromInt(len(values)), uint64(len(values))
 	}
 }
 
-func newEmptyListSequenceChunker(vr ValueReader, vw ValueWriter) *sequenceChunker {
-	return newEmptySequenceChunker(vr, vw, makeListLeafChunkFn(vr), newIndexedMetaSequenceChunkFn(ListKind, vr), hashValueBytes)
+func newEmptyListSequenceChunker(vrw ValueReadWriter) *sequenceChunker {
+	return newEmptySequenceChunker(vrw, makeListLeafChunkFn(vrw), newIndexedMetaSequenceChunkFn(ListKind, vrw), hashValueBytes)
 }

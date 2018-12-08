@@ -7,7 +7,7 @@ package chunks
 import (
 	"io"
 
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/hash"
 )
 
 // ChunkStore is the core storage abstraction in noms. We can put data
@@ -56,6 +56,11 @@ type ChunkStore interface {
 	// ChunkStore instance. The type is implementation-dependent, and impls
 	// may return nil
 	Stats() interface{}
+
+	// StatsSummary may return a string containing summarized statistics for
+	// this ChunkStore. It must return "Unsupported" if this operation is not
+	// supported.
+	StatsSummary() string
 
 	// Close tears down any resources in use by the implementation. After
 	// Close(), the ChunkStore may not be used again. It is NOT SAFE to call

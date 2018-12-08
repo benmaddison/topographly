@@ -6,12 +6,14 @@ package datas
 
 import (
 	"errors"
+	"fmt"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
-	"gopkg.in/attic-labs/noms.v7/go/merge"
-	"gopkg.in/attic-labs/noms.v7/go/types"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
+	"github.com/attic-labs/noms/go/merge"
+	"github.com/attic-labs/noms/go/types"
+	"github.com/attic-labs/noms/go/util/random"
 )
 
 type database struct {
@@ -51,10 +53,25 @@ func (db *database) Stats() interface{} {
 	return db.ChunkStore().Stats()
 }
 
+func (db *database) StatsSummary() string {
+	return db.ChunkStore().StatsSummary()
+}
+
+func (db *database) Flush() {
+	// TODO: This is a pretty ghetto hack - do better.
+	// See: https://github.com/attic-labs/noms/issues/3530
+	ds := db.GetDataset(fmt.Sprintf("-/flush/%s", random.Id()))
+	r := db.WriteValue(types.Bool(true))
+	ds, err := db.CommitValue(ds, r)
+	d.PanicIfError(err)
+	_, err = db.Delete(ds)
+	d.PanicIfError(err)
+}
+
 func (db *database) Datasets() types.Map {
 	rootHash := db.rt.Root()
 	if rootHash.IsEmpty() {
-		return types.NewMap()
+		return types.NewMap(db)
 	}
 
 	return db.ReadValue(rootHash).(types.Map)
@@ -85,7 +102,7 @@ func (db *database) SetHead(ds Dataset, newHeadRef types.Ref) (Dataset, error) {
 }
 
 func (db *database) doSetHead(ds Dataset, newHeadRef types.Ref) error {
-	if currentHeadRef, ok := ds.MaybeHeadRef(); ok && newHeadRef == currentHeadRef {
+	if currentHeadRef, ok := ds.MaybeHeadRef(); ok && newHeadRef.Equals(currentHeadRef) {
 		return nil
 	}
 	commit := db.validateRefAsCommit(newHeadRef)
@@ -93,7 +110,7 @@ func (db *database) doSetHead(ds Dataset, newHeadRef types.Ref) error {
 	currentRootHash, currentDatasets := db.rt.Root(), db.Datasets()
 	commitRef := db.WriteValue(commit) // will be orphaned if the tryCommitChunks() below fails
 
-	currentDatasets = currentDatasets.Edit().Set(types.String(ds.ID()), types.ToRefOfValue(commitRef)).Map(nil)
+	currentDatasets = currentDatasets.Edit().Set(types.String(ds.ID()), types.ToRefOfValue(commitRef)).Map()
 	return db.tryCommitChunks(currentDatasets, currentRootHash)
 }
 
@@ -102,9 +119,12 @@ func (db *database) FastForward(ds Dataset, newHeadRef types.Ref) (Dataset, erro
 }
 
 func (db *database) doFastForward(ds Dataset, newHeadRef types.Ref) error {
-	if currentHeadRef, ok := ds.MaybeHeadRef(); ok && newHeadRef == currentHeadRef {
+	currentHeadRef, ok := ds.MaybeHeadRef()
+	if ok && newHeadRef.Equals(currentHeadRef) {
 		return nil
-	} else if newHeadRef.Height() <= currentHeadRef.Height() {
+	}
+
+	if ok && newHeadRef.Height() <= currentHeadRef.Height() {
 		return ErrMergeNeeded
 	}
 
@@ -161,11 +181,11 @@ func (db *database) doCommit(datasetID string, commit types.Struct, mergePolicy 
 					if err != nil {
 						return err
 					}
-					commitRef = db.WriteValue(NewCommit(merged, types.NewSet(commitRef, currentHeadRef), types.EmptyStruct))
+					commitRef = db.WriteValue(NewCommit(merged, types.NewSet(db, commitRef, currentHeadRef), types.EmptyStruct))
 				}
 			}
 		}
-		currentDatasets = currentDatasets.Edit().Set(types.String(datasetID), types.ToRefOfValue(commitRef)).Map(nil)
+		currentDatasets = currentDatasets.Edit().Set(types.String(datasetID), types.ToRefOfValue(commitRef)).Map()
 		err = db.tryCommitChunks(currentDatasets, currentRootHash)
 	}
 	return err
@@ -188,7 +208,7 @@ func (db *database) doDelete(datasetIDstr string) error {
 
 	var err error
 	for {
-		currentDatasets = currentDatasets.Edit().Remove(datasetID).Map(nil)
+		currentDatasets = currentDatasets.Edit().Remove(datasetID).Map()
 		err = db.tryCommitChunks(currentDatasets, currentRootHash)
 		if err != ErrOptimisticLockFailed {
 			break
@@ -227,9 +247,9 @@ func (db *database) validateRefAsCommit(r types.Ref) types.Struct {
 func buildNewCommit(ds Dataset, v types.Value, opts CommitOptions) types.Struct {
 	parents := opts.Parents
 	if (parents == types.Set{}) {
-		parents = types.NewSet()
+		parents = types.NewSet(ds.Database())
 		if headRef, ok := ds.MaybeHeadRef(); ok {
-			parents = parents.Edit().Insert(headRef).Set(nil)
+			parents = parents.Edit().Insert(headRef).Set()
 		}
 	}
 

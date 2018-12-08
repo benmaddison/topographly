@@ -35,7 +35,7 @@ import (
 	"regexp"
 	"strconv"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 const (
@@ -64,7 +64,7 @@ func (h Hash) String() string {
 	return encode(h[:])
 }
 
-// FromData computes a new Hash from data.
+// Of computes a new Hash from data.
 func Of(data []byte) Hash {
 	r := sha512.Sum512(data)
 	h := Hash{}
@@ -72,7 +72,7 @@ func Of(data []byte) Hash {
 	return h
 }
 
-// FromSlice creates a new Hash backed by data, ensuring that data is an acceptable length.
+// New creates a new Hash backed by data, ensuring that data is an acceptable length.
 func New(data []byte) Hash {
 	d.PanicIfFalse(len(data) == ByteLen)
 	h := Hash{}
@@ -90,7 +90,7 @@ func MaybeParse(s string) (Hash, bool) {
 	return New(decode(s)), true
 }
 
-// MaybeParse parses a string representing a hash as a Base32 encoded byte array.
+// Parse parses a string representing a hash as a Base32 encoded byte array.
 // If the string is not well formed then this panics.
 func Parse(s string) Hash {
 	r, ok := MaybeParse(s)
@@ -115,7 +115,7 @@ func (h Hash) Greater(other Hash) bool {
 type HashSet map[Hash]struct{}
 
 func NewHashSet(hashes ...Hash) HashSet {
-	out := HashSet{}
+	out := make(HashSet, len(hashes))
 	for _, h := range hashes {
 		out.Insert(h)
 	}

@@ -1,0 +1,31 @@
+# ignored = [
+#   "github.com/attic-labs/graphql"
+# ]
+
+[[constraint]]
+  name = "github.com/attic-labs/noms"
+  branch = "master"
+
+[[constraint]]
+  name = "github.com/graphql-go/graphql"
+  version = "0.7.7"
+
+[[constraint]]
+  name = "github.com/graphql-go/handler"
+  version = "0.2.2"
+
+[[constraint]]
+  name = "github.com/openconfig/goyang"
+  branch = "master"
+
+[[constraint]]
+  name = "github.com/openconfig/ygot"
+  branch = "master"
+
+[[override]]
+  name = "github.com/attic-labs/graphql"
+  branch = "master"
+
+[prune]
+  go-tests = true
+  unused-packages = true

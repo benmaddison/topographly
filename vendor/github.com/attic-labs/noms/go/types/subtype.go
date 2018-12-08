@@ -5,7 +5,7 @@
 package types
 
 import (
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 func assertSubtype(t *Type, v Value) {
@@ -270,7 +270,7 @@ func isValueSubtypeOfDetails(v Value, t *Type, hasExtra bool) (bool, bool) {
 				hasExtra = hasExtra || hasMore
 			}
 		}
-		if len(s.fieldNames)+missingOptionalFieldCnt > len(desc.fields) {
+		if s.Len()+missingOptionalFieldCnt > len(desc.fields) {
 			hasExtra = true
 		}
 		return true, hasExtra
@@ -283,8 +283,8 @@ func isValueSubtypeOfDetails(v Value, t *Type, hasExtra bool) (bool, bool) {
 		case Map:
 			kt := desc.ElemTypes[0]
 			vt := desc.ElemTypes[1]
-			if seq, ok := v.seq.(mapLeafSequence); ok {
-				for _, entry := range seq.data {
+			if seq, ok := v.orderedSequence.(mapLeafSequence); ok {
+				for _, entry := range seq.entries() {
 					isSub, hasMore := isValueSubtypeOfDetails(entry.key, kt, hasExtra)
 					if !isSub {
 						return false, hasExtra
@@ -298,11 +298,11 @@ func isValueSubtypeOfDetails(v Value, t *Type, hasExtra bool) (bool, bool) {
 				}
 				return true, hasExtra
 			}
-			return isMetaSequenceSubtypeOf(v.seq.(metaSequence), t, hasExtra)
+			return isMetaSequenceSubtypeOf(v.orderedSequence.(metaSequence), t, hasExtra)
 		case Set:
 			et := desc.ElemTypes[0]
-			if seq, ok := v.seq.(setLeafSequence); ok {
-				for _, v := range seq.data {
+			if seq, ok := v.orderedSequence.(setLeafSequence); ok {
+				for _, v := range seq.values() {
 					isSub, hasMore := isValueSubtypeOfDetails(v, et, hasExtra)
 					if !isSub {
 						return false, hasExtra
@@ -311,11 +311,11 @@ func isValueSubtypeOfDetails(v Value, t *Type, hasExtra bool) (bool, bool) {
 				}
 				return true, hasExtra
 			}
-			return isMetaSequenceSubtypeOf(v.seq.(metaSequence), t, hasExtra)
+			return isMetaSequenceSubtypeOf(v.orderedSequence.(metaSequence), t, hasExtra)
 		case List:
 			et := desc.ElemTypes[0]
-			if seq, ok := v.seq.(listLeafSequence); ok {
-				for _, v := range seq.values {
+			if seq, ok := v.sequence.(listLeafSequence); ok {
+				for _, v := range seq.values() {
 					isSub, hasMore := isValueSubtypeOfDetails(v, et, hasExtra)
 					if !isSub {
 						return false, hasExtra
@@ -324,16 +324,17 @@ func isValueSubtypeOfDetails(v Value, t *Type, hasExtra bool) (bool, bool) {
 				}
 				return true, hasExtra
 			}
-			return isMetaSequenceSubtypeOf(v.seq.(metaSequence), t, hasExtra)
+			return isMetaSequenceSubtypeOf(v.sequence.(metaSequence), t, hasExtra)
 		}
 	}
 	panic("unreachable")
 }
 
 func isMetaSequenceSubtypeOf(ms metaSequence, t *Type, hasExtra bool) (bool, bool) {
-	for _, mt := range ms.tuples {
+	// TODO: iterRefs
+	for _, mt := range ms.tuples() {
 		// Each prolly tree is also a List<T> where T needs to be a subtype.
-		isSub, hasMore := isSubtypeTopLevel(t, mt.ref.TargetType())
+		isSub, hasMore := isSubtypeTopLevel(t, mt.ref().TargetType())
 		if !isSub {
 			return false, hasExtra
 		}

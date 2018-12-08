@@ -4,7 +4,7 @@
 
 package types
 
-import "gopkg.in/attic-labs/noms.v7/go/hash"
+import "github.com/attic-labs/noms/go/hash"
 
 type SkipValueCallback func(v Value) bool
 
@@ -18,7 +18,7 @@ type valueRec struct {
 
 const maxRefCount = 1 << 12 // ~16MB of data
 
-// WalkValues recursively walks over all types. Values reachable from r and calls cb on them.
+// WalkValues recursively walks over all types.Values reachable from r and calls cb on them.
 func WalkValues(target Value, vr ValueReader, cb SkipValueCallback) {
 	visited := hash.HashSet{}
 	refs := map[hash.Hash]bool{}
@@ -43,15 +43,10 @@ func WalkValues(target Value, vr ValueReader, cb SkipValueCallback) {
 				continue
 			}
 
-			if col, ok := v.(Collection); ok && !col.sequence().isLeaf() {
-				ms := col.sequence().(metaSequence)
-				for _, mt := range ms.tuples {
-					if mt.child != nil {
-						values = append(values, valueRec{mt.child, false})
-					} else {
-						refs[mt.ref.TargetHash()] = false
-					}
-				}
+			if col, ok := v.(Collection); ok && !col.asSequence().isLeaf() {
+				col.WalkRefs(func(r Ref) {
+					refs[r.TargetHash()] = false
+				})
 				continue
 			}
 
@@ -64,7 +59,7 @@ func WalkValues(target Value, vr ValueReader, cb SkipValueCallback) {
 			continue
 		}
 
-		hs := hash.HashSet{}
+		hs := make(hash.HashSlice, 0, len(refs))
 		oldRefs := refs
 		refs = map[hash.Hash]bool{}
 		for h := range oldRefs {
@@ -77,16 +72,14 @@ func WalkValues(target Value, vr ValueReader, cb SkipValueCallback) {
 				continue
 			}
 
-			hs.Insert(h)
+			hs = append(hs, h)
 			visited.Insert(h)
 		}
 
 		if len(hs) > 0 {
-			valueChan := make(chan Value, len(hs))
-			vr.ReadManyValues(hs, valueChan)
-			close(valueChan)
-			for sv := range valueChan {
-				values = append(values, valueRec{sv, oldRefs[sv.Hash()]})
+			readValues := vr.ReadManyValues(hs)
+			for i, sv := range readValues {
+				values = append(values, valueRec{sv, oldRefs[hs[i]]})
 			}
 		}
 	}

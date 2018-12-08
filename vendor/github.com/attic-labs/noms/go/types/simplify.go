@@ -3,7 +3,7 @@ package types
 import (
 	"sort"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 // simplifyType returns a type that is a super type of the input type but is
@@ -41,10 +41,14 @@ import (
 //
 // All the above rules are applied recursively.
 func simplifyType(t *Type, intersectStructs bool) *Type {
+	if t.Desc.isSimplifiedForSure() {
+		return t
+	}
+
 	// 1. Clone tree because we are going to mutate it
 	//    1.1 Replace all named structs and cycle types with a single `struct Name {}`
-	// 2. When a union type is found change its elemtypes as needed
-	//    2.1 Merge unamed structs
+	// 2. When a union type is found change its elemTypes as needed
+	//    2.1 Merge unnamed structs
 	// 3. Update the fields of all named structs
 
 	namedStructs := map[string]structInfo{}
@@ -187,7 +191,7 @@ func foldUnions(t *Type, seenStructs typeset, intersectStructs bool) *Type {
 		if len(elemTypes) == 0 {
 			break
 		}
-		ts := typeset{}
+		ts := make(typeset, len(elemTypes))
 		for _, t := range elemTypes {
 			ts.add(t)
 		}
@@ -327,7 +331,7 @@ func simplifyStructFields(in []structTypeFields, seenStructs typeset, intersectS
 			fti, ok := allFields[f.Name]
 			if !ok {
 				fti = fieldTypeInfo{
-					ts: typeSlice{},
+					ts: make(typeSlice, 0, len(in)),
 				}
 			}
 			fti.ts = append(fti.ts, f.Type)
@@ -340,14 +344,16 @@ func simplifyStructFields(in []structTypeFields, seenStructs typeset, intersectS
 	}
 
 	count := len(in)
-	fields := make(structTypeFields, 0, count)
+	fields := make(structTypeFields, len(allFields))
+	i := 0
 	for name, fti := range allFields {
-		nt := makeCompoundType(UnionKind, fti.ts...)
-		fields = append(fields, StructField{
+		nt := makeUnionType(fti.ts...)
+		fields[i] = StructField{
 			Name:     name,
 			Type:     foldUnions(nt, seenStructs, intersectStructs),
 			Optional: !(intersectStructs && fti.anyNonOptional) && fti.count < count,
-		})
+		}
+		i++
 	}
 
 	sort.Sort(fields)

@@ -7,7 +7,7 @@ package types
 import (
 	"sort"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 // SetEditor allows for efficient editing of Set-typed prolly trees. Edits
@@ -30,19 +30,17 @@ func (se *SetEditor) Kind() NomsKind {
 	return SetKind
 }
 
-func (se *SetEditor) Value(vrw ValueReadWriter) Value {
-	return se.Set(vrw)
+func (se *SetEditor) Value() Value {
+	return se.Set()
 }
 
-func (se *SetEditor) Set(vrw ValueReadWriter) Set {
+func (se *SetEditor) Set() Set {
 	if len(se.edits) == 0 {
 		return se.s // no edits
 	}
 
-	vr := se.s.sequence().valueReader()
-	if vrw != nil {
-		vr = vrw
-	}
+	seq := se.s.orderedSequence
+	vrw := seq.valueReadWriter()
 
 	se.normalize()
 
@@ -62,7 +60,7 @@ func (se *SetEditor) Set(vrw ValueReadWriter) Set {
 			cursChan <- cc
 
 			go func() {
-				cc <- newCursorAtValue(se.s.seq, edit.value, true, false, false)
+				cc <- newCursorAtValue(seq, edit.value, true, false)
 			}()
 
 			editChan <- edit
@@ -93,7 +91,7 @@ func (se *SetEditor) Set(vrw ValueReadWriter) Set {
 		}
 
 		if ch == nil {
-			ch = newSequenceChunker(cur, 0, vr, vrw, makeSetLeafChunkFn(vr), newOrderedMetaSequenceChunkFn(SetKind, vr), hashValueBytes)
+			ch = newSequenceChunker(cur, 0, vrw, makeSetLeafChunkFn(vrw), newOrderedMetaSequenceChunkFn(SetKind, vrw), hashValueBytes)
 		} else {
 			ch.advanceTo(cur)
 		}

@@ -4,15 +4,14 @@
 
 package types
 
-import "gopkg.in/attic-labs/noms.v7/go/d"
+import "github.com/attic-labs/noms/go/d"
 
 type hashValueBytesFn func(item sequenceItem, rv *rollingValueHasher)
 
 type sequenceChunker struct {
 	cur                        *sequenceCursor
 	level                      uint64
-	vr                         ValueReader
-	vw                         ValueWriter
+	vrw                        ValueReadWriter
 	parent                     *sequenceChunker
 	current                    []sequenceItem
 	makeChunk, parentMakeChunk makeChunkFn
@@ -20,34 +19,36 @@ type sequenceChunker struct {
 	hashValueBytes             hashValueBytesFn
 	rv                         *rollingValueHasher
 	done                       bool
+	unwrittenCol               Collection
 }
 
 // makeChunkFn takes a sequence of items to chunk, and returns the result of chunking those items, a tuple of a reference to that chunk which can itself be chunked + its underlying value.
 type makeChunkFn func(level uint64, values []sequenceItem) (Collection, orderedKey, uint64)
 
-func newEmptySequenceChunker(vr ValueReader, vw ValueWriter, makeChunk, parentMakeChunk makeChunkFn, hashValueBytes hashValueBytesFn) *sequenceChunker {
-	return newSequenceChunker(nil, uint64(0), vr, vw, makeChunk, parentMakeChunk, hashValueBytes)
+func newEmptySequenceChunker(vrw ValueReadWriter, makeChunk, parentMakeChunk makeChunkFn, hashValueBytes hashValueBytesFn) *sequenceChunker {
+	return newSequenceChunker(nil, uint64(0), vrw, makeChunk, parentMakeChunk, hashValueBytes)
 }
 
-func newSequenceChunker(cur *sequenceCursor, level uint64, vr ValueReader, vw ValueWriter, makeChunk, parentMakeChunk makeChunkFn, hashValueBytes hashValueBytesFn) *sequenceChunker {
+func newSequenceChunker(cur *sequenceCursor, level uint64, vrw ValueReadWriter, makeChunk, parentMakeChunk makeChunkFn, hashValueBytes hashValueBytesFn) *sequenceChunker {
 	d.PanicIfFalse(makeChunk != nil)
 	d.PanicIfFalse(parentMakeChunk != nil)
 	d.PanicIfFalse(hashValueBytes != nil)
+	d.PanicIfTrue(vrw == nil)
 
 	// |cur| will be nil if this is a new sequence, implying this is a new tree, or the tree has grown in height relative to its original chunked form.
 
 	sc := &sequenceChunker{
 		cur,
 		level,
-		vr,
-		vw,
+		vrw,
 		nil,
-		[]sequenceItem{},
+		make([]sequenceItem, 0, 1<<10),
 		makeChunk, parentMakeChunk,
 		true,
 		hashValueBytes,
 		newRollingValueHasher(byte(level % 256)),
 		false,
+		nil,
 	}
 
 	if cur != nil {
@@ -164,34 +165,55 @@ func (sc *sequenceChunker) createParent() {
 		// Clone the parent cursor because otherwise calling cur.advance() will affect our parent - and vice versa - in surprising ways. Instead, Skip moves forward our parent's cursor if we advance across a boundary.
 		parent = sc.cur.parent
 	}
-	sc.parent = newSequenceChunker(parent, sc.level+1, sc.vr, sc.vw, sc.parentMakeChunk, sc.parentMakeChunk, metaHashValueBytes)
+	sc.parent = newSequenceChunker(parent, sc.level+1, sc.vrw, sc.parentMakeChunk, sc.parentMakeChunk, metaHashValueBytes)
 	sc.parent.isLeaf = false
+
+	if sc.unwrittenCol != nil {
+		// There is an unwritten collection, but this chunker now has a parent, so
+		// write it. See createSequence().
+		sc.vrw.WriteValue(sc.unwrittenCol)
+		sc.unwrittenCol = nil
+	}
 }
 
-func (sc *sequenceChunker) createSequence() (sequence, metaTuple) {
-	// If the sequence chunker has a ValueWriter, eagerly write sequences.
+// createSequence creates a sequence from the current items in |sc.current|,
+// clears the current items, then returns the new sequence and a metaTuple that
+// points to it.
+//
+// If |write| is true then the sequence is eagerly written, or if false it's
+// manually constructed and stored in |sc.unwrittenCol| to possibly write later
+// in createParent(). This is to hopefully avoid unnecessarily writing the root
+// chunk (for example, the sequence may be stored inline).
+//
+// There is a catch: in the rare case that the root chunk is actually not the
+// canonical root of the sequence (see Done()), then we will have ended up
+// unnecessarily writing a chunk - the canonical root. However, this is a fair
+// tradeoff for simplicity of the chunking algorithm.
+func (sc *sequenceChunker) createSequence(write bool) (sequence, metaTuple) {
 	col, key, numLeaves := sc.makeChunk(sc.level, sc.current)
-	seq := col.sequence()
+
+	// |sc.makeChunk| copies |sc.current| so it's safe to re-use the memory.
+	sc.current = sc.current[:0]
+
 	var ref Ref
-	if sc.vw != nil {
-		ref = sc.vw.WriteValue(col)
-		col = nil
+	if write {
+		ref = sc.vrw.WriteValue(col)
 	} else {
 		ref = NewRef(col)
+		sc.unwrittenCol = col
 	}
-	mt := newMetaTuple(ref, key, numLeaves, col)
 
-	sc.current = []sequenceItem{}
-	return seq, mt
+	mt := newMetaTuple(ref, key, numLeaves)
+	return col.asSequence(), mt
 }
 
 func (sc *sequenceChunker) handleChunkBoundary() {
-	d.Chk.NotEmpty(sc.current)
+	d.PanicIfFalse(len(sc.current) > 0)
 	sc.rv.Reset()
-	_, mt := sc.createSequence()
 	if sc.parent == nil {
 		sc.createParent()
 	}
+	_, mt := sc.createSequence(true)
 	sc.parent.Append(mt)
 }
 
@@ -233,7 +255,7 @@ func (sc *sequenceChunker) Done() sequence {
 
 	// (1) This is "leaf" chunker and thus produced tree of depth 1 which contains exactly one chunk (never hit a boundary), or (2) This in an internal node of the tree which contains multiple references to child nodes. In either case, this is the canonical root of the tree.
 	if sc.isLeaf || len(sc.current) > 1 {
-		seq, _ := sc.createSequence()
+		seq, _ := sc.createSequence(false)
 		return seq
 	}
 
@@ -242,7 +264,7 @@ func (sc *sequenceChunker) Done() sequence {
 	mt := sc.current[0].(metaTuple)
 
 	for {
-		child := mt.getChildSequence(sc.vr)
+		child := mt.getChildSequence(sc.vrw)
 		if _, ok := child.(metaSequence); !ok || child.seqLen() > 1 {
 			return child
 		}

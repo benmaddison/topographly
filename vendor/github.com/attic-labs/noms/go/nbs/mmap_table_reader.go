@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 type mmapTableReader struct {

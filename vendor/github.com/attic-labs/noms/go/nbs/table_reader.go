@@ -11,9 +11,9 @@ import (
 	"sort"
 	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
 	"github.com/golang/snappy"
 )
 
@@ -30,6 +30,7 @@ type tableReaderAt interface {
 }
 
 // tableReader implements get & has queries against a single nbs table. goroutine safe.
+// |blockSize| refers to the block-size of the underlying storage. We assume that, each time we read data, we actually have to read in blocks of this size. So, we're willing to tolerate up to |blockSize| overhead each time we read a chunk, if it helps us group more chunks together into a single read request to backing storage.
 type tableReader struct {
 	tableIndex
 	r         tableReaderAt

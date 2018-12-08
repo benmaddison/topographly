@@ -8,8 +8,8 @@ import (
 	"sort"
 	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/hash"
 )
 
 type memTable struct {
@@ -120,6 +120,8 @@ func (mt *memTable) write(haver chunkReader, stats *Stats) (name addr, data []by
 
 	if count > 0 {
 		stats.BytesPerPersist.Sample(uint64(tableSize))
+		stats.CompressedChunkBytesPerPersist.Sample(uint64(tw.totalCompressedData))
+		stats.UncompressedChunkBytesPerPersist.Sample(uint64(tw.totalUncompressedData))
 		stats.ChunksPerPersist.Sample(uint64(count))
 	}
 

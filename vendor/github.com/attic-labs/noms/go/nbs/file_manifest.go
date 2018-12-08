@@ -14,9 +14,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"gopkg.in/attic-labs/noms.v7/go/constants"
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/constants"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
 )
 
 const (
@@ -41,7 +41,7 @@ func (fm fileManifest) Name() string {
 // them, it takes the lock, parses the manifest and returns its contents,
 // setting |exists| to true. If not, it sets |exists| to false and returns. In
 // that case, the other return values are undefined. If |readHook| is non-nil,
-// it will be executed while ParseIfExists() holds the manfiest file lock.
+// it will be executed while ParseIfExists() holds the manifest file lock.
 // This is to allow for race condition testing.
 func (fm fileManifest) ParseIfExists(stats *Stats, readHook func()) (exists bool, contents manifestContents) {
 	t1 := time.Now()

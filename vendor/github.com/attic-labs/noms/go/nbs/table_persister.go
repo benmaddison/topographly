@@ -11,8 +11,8 @@ import (
 	"sort"
 	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/util/sizecache"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/util/sizecache"
 )
 
 // tablePersister allows interaction with persistent storage. It provides
@@ -30,7 +30,7 @@ type tablePersister interface {
 	ConjoinAll(sources chunkSources, stats *Stats) chunkSource
 
 	// Open a table named |name|, containing |chunkCount| chunks.
-	Open(name addr, chunkCount uint32) chunkSource
+	Open(name addr, chunkCount uint32, stats *Stats) chunkSource
 }
 
 // indexCache provides sized storage for table indices. While getting and/or

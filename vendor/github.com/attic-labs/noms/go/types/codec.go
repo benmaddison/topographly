@@ -7,72 +7,61 @@ package types
 import (
 	"encoding/binary"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
 )
 
 const initialBufferSize = 2048
 
-func EncodeValue(v Value) chunks.Chunk {
-	w := newBinaryNomsWriter()
-	enc := newValueEncoder(w, false)
-	enc.writeValue(v)
-
-	c := chunks.NewChunk(w.data())
-	if cacher, ok := v.(hashCacher); ok {
-		assignHash(cacher, c.Hash())
-	}
-
-	return c
+type valueBytes interface {
+	valueBytes() []byte
 }
 
-func DecodeFromBytes(data []byte, vr ValueReader) Value {
-	br := &binaryNomsReader{data, 0}
-	dec := newValueDecoder(br, vr)
+func EncodeValue(v Value) chunks.Chunk {
+	switch v := v.(type) {
+	case valueBytes:
+		return chunks.NewChunk(v.valueBytes())
+	case *Type:
+		w := newBinaryNomsWriter()
+		v.writeTo(&w)
+		return chunks.NewChunk(w.data())
+	}
+
+	panic("unreachable")
+}
+
+func DecodeFromBytes(data []byte, vrw ValueReadWriter) Value {
+	dec := newValueDecoder(data, vrw)
 	v := dec.readValue()
-	d.PanicIfFalse(br.pos() == uint32(len(data)))
+	d.PanicIfFalse(dec.pos() == uint32(len(data)))
 	return v
 }
 
-func decodeFromBytesWithValidation(data []byte, vr ValueReader) Value {
-	br := &binaryNomsReader{data, 0}
-	dec := newValueDecoderWithValidation(br, vr)
+func decodeFromBytesWithValidation(data []byte, vrw ValueReadWriter) Value {
+	r := binaryNomsReader{data, 0}
+	dec := newValueDecoderWithValidation(r, vrw)
 	v := dec.readValue()
-	d.PanicIfFalse(br.pos() == uint32(len(data)))
+	d.PanicIfFalse(dec.pos() == uint32(len(data)))
 	return v
 }
 
 // DecodeValue decodes a value from a chunk source. It is an error to provide an empty chunk.
-func DecodeValue(c chunks.Chunk, vr ValueReader) Value {
+func DecodeValue(c chunks.Chunk, vrw ValueReadWriter) Value {
 	d.PanicIfTrue(c.IsEmpty())
-	v := DecodeFromBytes(c.Data(), vr)
-	if cacher, ok := v.(hashCacher); ok {
-		assignHash(cacher, c.Hash())
-	}
-
-	return v
-}
-
-type nomsReader interface {
-	pos() uint32
-	readBytes() []byte
-	readUint8() uint8
-	readCount() uint64
-	readNumber() Number
-	readBool() bool
-	readString() string
-	readHash() hash.Hash
+	return DecodeFromBytes(c.Data(), vrw)
 }
 
 type nomsWriter interface {
-	writeBytes(v []byte)
-	writeUint8(v uint8)
-	writeCount(count uint64)
-	writeNumber(v Number)
 	writeBool(b bool)
-	writeString(v string)
+	writeBytes(v []byte)
+	writeCount(count uint64)
 	writeHash(h hash.Hash)
+	writeNumber(v Number)
+	writeString(v string)
+	writeUint8(v uint8)
+
+	writeRaw(buff []byte)
 }
 
 type binaryNomsReader struct {
@@ -84,25 +73,41 @@ func (b *binaryNomsReader) pos() uint32 {
 	return b.offset
 }
 
-func (b *binaryNomsReader) readBytes() []byte {
-	size := uint32(b.readCount())
-
-	buff := make([]byte, size, size)
-	copy(buff, b.buff[b.offset:b.offset+size])
-	b.offset += size
-	return buff
-}
-
 func (b *binaryNomsReader) readUint8() uint8 {
 	v := uint8(b.buff[b.offset])
 	b.offset++
 	return v
 }
 
+func (b *binaryNomsReader) peekUint8() uint8 {
+	return uint8(b.buff[b.offset])
+}
+
+func (b *binaryNomsReader) skipUint8() {
+	b.offset++
+}
+
+func (b *binaryNomsReader) peekKind() NomsKind {
+	return NomsKind(b.peekUint8())
+}
+
+func (b *binaryNomsReader) readKind() NomsKind {
+	return NomsKind(b.readUint8())
+}
+
+func (b *binaryNomsReader) skipKind() {
+	b.skipUint8()
+}
+
 func (b *binaryNomsReader) readCount() uint64 {
 	v, count := binary.Uvarint(b.buff[b.offset:])
 	b.offset += uint32(count)
 	return v
+}
+
+func (b *binaryNomsReader) skipCount() {
+	_, count := binary.Uvarint(b.buff[b.offset:])
+	b.offset += uint32(count)
 }
 
 func (b *binaryNomsReader) readNumber() Number {
@@ -114,8 +119,19 @@ func (b *binaryNomsReader) readNumber() Number {
 	return Number(fracExpToFloat(i, int(exp)))
 }
 
+func (b *binaryNomsReader) skipNumber() {
+	_, count := binary.Varint(b.buff[b.offset:])
+	b.offset += uint32(count)
+	_, count2 := binary.Varint(b.buff[b.offset:])
+	b.offset += uint32(count2)
+}
+
 func (b *binaryNomsReader) readBool() bool {
 	return b.readUint8() == 1
+}
+
+func (b *binaryNomsReader) skipBool() {
+	b.skipUint8()
 }
 
 func (b *binaryNomsReader) readString() string {
@@ -126,6 +142,11 @@ func (b *binaryNomsReader) readString() string {
 	return v
 }
 
+func (b *binaryNomsReader) skipString() {
+	size := uint32(b.readCount())
+	b.offset += size
+}
+
 func (b *binaryNomsReader) readHash() hash.Hash {
 	h := hash.Hash{}
 	copy(h[:], b.buff[b.offset:b.offset+hash.ByteLen])
@@ -133,13 +154,21 @@ func (b *binaryNomsReader) readHash() hash.Hash {
 	return h
 }
 
+func (b *binaryNomsReader) skipHash() {
+	b.offset += hash.ByteLen
+}
+
+func (b *binaryNomsReader) byteSlice(start, end uint32) []byte {
+	return b.buff[start:end]
+}
+
 type binaryNomsWriter struct {
 	buff   []byte
 	offset uint32
 }
 
-func newBinaryNomsWriter() *binaryNomsWriter {
-	return &binaryNomsWriter{make([]byte, initialBufferSize, initialBufferSize), 0}
+func newBinaryNomsWriter() binaryNomsWriter {
+	return binaryNomsWriter{make([]byte, initialBufferSize), 0}
 }
 
 func (b *binaryNomsWriter) data() []byte {
@@ -168,8 +197,6 @@ func (b *binaryNomsWriter) ensureCapacity(n uint32) {
 
 func (b *binaryNomsWriter) writeBytes(v []byte) {
 	size := uint32(len(v))
-	b.writeCount(uint64(size))
-
 	b.ensureCapacity(size)
 	copy(b.buff[b.offset:], v)
 	b.offset += size
@@ -182,7 +209,7 @@ func (b *binaryNomsWriter) writeUint8(v uint8) {
 }
 
 func (b *binaryNomsWriter) writeCount(v uint64) {
-	b.ensureCapacity(binary.MaxVarintLen64 * 2)
+	b.ensureCapacity(binary.MaxVarintLen64)
 	count := binary.PutUvarint(b.buff[b.offset:], v)
 	b.offset += uint32(count)
 }
@@ -217,4 +244,10 @@ func (b *binaryNomsWriter) writeHash(h hash.Hash) {
 	b.ensureCapacity(hash.ByteLen)
 	copy(b.buff[b.offset:], h[:])
 	b.offset += hash.ByteLen
+}
+
+func (b *binaryNomsWriter) writeRaw(buff []byte) {
+	b.ensureCapacity(uint32(len(buff)))
+	copy(b.buff[b.offset:], buff)
+	b.offset += uint32(len(buff))
 }

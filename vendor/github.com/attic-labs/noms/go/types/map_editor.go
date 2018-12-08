@@ -7,7 +7,7 @@ package types
 import (
 	"sort"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 // MapEditor allows for efficient editing of Map-typed prolly trees. Edits
@@ -30,19 +30,17 @@ func (me *MapEditor) Kind() NomsKind {
 	return MapKind
 }
 
-func (me *MapEditor) Value(vrw ValueReadWriter) Value {
-	return me.Map(vrw)
+func (me *MapEditor) Value() Value {
+	return me.Map()
 }
 
-func (me *MapEditor) Map(vrw ValueReadWriter) Map {
+func (me *MapEditor) Map() Map {
 	if len(me.edits) == 0 {
 		return me.m // no edits
 	}
 
-	vr := me.m.sequence().valueReader()
-	if vrw != nil {
-		vr = vrw
-	}
+	seq := me.m.orderedSequence
+	vrw := seq.valueReadWriter()
 
 	me.normalize()
 
@@ -62,7 +60,7 @@ func (me *MapEditor) Map(vrw ValueReadWriter) Map {
 			cursChan <- cc
 
 			go func() {
-				cc <- newCursorAtValue(me.m.seq, edit.key, true, false, false)
+				cc <- newCursorAtValue(seq, edit.key, true, false)
 			}()
 
 			kvc := make(chan mapEntry, 1)
@@ -79,7 +77,7 @@ func (me *MapEditor) Map(vrw ValueReadWriter) Map {
 			}
 
 			go func() {
-				sv := edit.value.Value(vrw)
+				sv := edit.value.Value()
 				if e, ok := sv.(Emptyable); ok {
 					if e.Empty() {
 						sv = nil
@@ -116,7 +114,7 @@ func (me *MapEditor) Map(vrw ValueReadWriter) Map {
 		}
 
 		if ch == nil {
-			ch = newSequenceChunker(cur, 0, vr, vrw, makeMapLeafChunkFn(vr), newOrderedMetaSequenceChunkFn(MapKind, vr), mapHashValueBytes)
+			ch = newSequenceChunker(cur, 0, vrw, makeMapLeafChunkFn(vrw), newOrderedMetaSequenceChunkFn(MapKind, vrw), mapHashValueBytes)
 		} else {
 			ch.advanceTo(cur)
 		}

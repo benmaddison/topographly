@@ -5,16 +5,16 @@
 package types
 
 import (
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
 )
 
-func newListMetaSequence(level uint64, tuples []metaTuple, vr ValueReader) metaSequence {
-	return newMetaSequence(ListKind, level, tuples, vr)
+func newListMetaSequence(level uint64, tuples []metaTuple, vrw ValueReadWriter) metaSequence {
+	return newMetaSequenceFromTuples(ListKind, level, tuples, vrw)
 }
 
-func newBlobMetaSequence(level uint64, tuples []metaTuple, vr ValueReader) metaSequence {
-	return newMetaSequence(BlobKind, level, tuples, vr)
+func newBlobMetaSequence(level uint64, tuples []metaTuple, vrw ValueReadWriter) metaSequence {
+	return newMetaSequenceFromTuples(BlobKind, level, tuples, vrw)
 }
 
 // advanceCursorToOffset advances the cursor as close as possible to idx
@@ -33,25 +33,30 @@ func advanceCursorToOffset(cur *sequenceCursor, idx uint64) uint64 {
 		cur.idx = 0
 		cum := uint64(0)
 
+		seqLen := ms.seqLen()
 		// Advance the cursor to the meta-sequence tuple containing idx
-		for cur.idx < ms.seqLen()-1 && uint64(idx) >= cum+ms.tuples[cur.idx].numLeaves {
-			cum += ms.tuples[cur.idx].numLeaves
-			cur.idx++
+		for cur.idx < seqLen-1 {
+			numLeaves := ms.getNumLeavesAt(cur.idx)
+			if uint64(idx) >= cum+numLeaves {
+				cum += numLeaves
+				cur.idx++
+			} else {
+				break
+			}
 		}
 
 		return cum // number of leaves sequences BEFORE cur.idx in meta sequence
 	}
 
+	seqLen := seq.seqLen()
 	cur.idx = int(idx)
-	if cur.idx > seq.seqLen() {
-		cur.idx = seq.seqLen()
+	if cur.idx > seqLen {
+		cur.idx = seqLen
 	}
 	return uint64(cur.idx)
 }
 
-// If |sink| is not nil, chunks will be eagerly written as they're created. Otherwise they are
-// written when the root is written.
-func newIndexedMetaSequenceChunkFn(kind NomsKind, source ValueReader) makeChunkFn {
+func newIndexedMetaSequenceChunkFn(kind NomsKind, vrw ValueReadWriter) makeChunkFn {
 	return func(level uint64, items []sequenceItem) (Collection, orderedKey, uint64) {
 		tuples := make([]metaTuple, len(items))
 		numLeaves := uint64(0)
@@ -59,15 +64,15 @@ func newIndexedMetaSequenceChunkFn(kind NomsKind, source ValueReader) makeChunkF
 		for i, v := range items {
 			mt := v.(metaTuple)
 			tuples[i] = mt
-			numLeaves += mt.numLeaves
+			numLeaves += mt.numLeaves()
 		}
 
 		var col Collection
 		if kind == ListKind {
-			col = newList(newListMetaSequence(level, tuples, source))
+			col = newList(newListMetaSequence(level, tuples, vrw))
 		} else {
 			d.PanicIfFalse(BlobKind == kind)
-			col = newBlob(newBlobMetaSequence(level, tuples, source))
+			col = newBlob(newBlobMetaSequence(level, tuples, vrw))
 		}
 		return col, orderedKeyFromSum(tuples), numLeaves
 	}
@@ -76,77 +81,64 @@ func newIndexedMetaSequenceChunkFn(kind NomsKind, source ValueReader) makeChunkF
 func orderedKeyFromSum(msd []metaTuple) orderedKey {
 	sum := uint64(0)
 	for _, mt := range msd {
-		sum += mt.numLeaves
+		sum += mt.numLeaves()
 	}
 	return orderedKeyFromUint64(sum)
 }
 
-// loads the set of leaf sequences which contain the items [startIdx -> endIdx).
-// Returns the set of sequences and the offset within the first sequence which corresponds to |startIdx|.
-func loadLeafSequences(vr ValueReader, seqs []sequence, startIdx, endIdx uint64) ([]sequence, uint64) {
-	if seqs[0].isLeaf() {
-		for _, s := range seqs {
-			d.PanicIfFalse(s.isLeaf())
+// LoadLeafNodes loads the set of leaf nodes which contain the items
+// [startIdx -> endIdx).  Returns the set of nodes and the offset within
+// the first sequence which corresponds to |startIdx|.
+func LoadLeafNodes(cols []Collection, startIdx, endIdx uint64) ([]Collection, uint64) {
+	vrw := cols[0].asSequence().valueReadWriter()
+	d.PanicIfTrue(vrw == nil)
+
+	if cols[0].asSequence().isLeaf() {
+		for _, c := range cols {
+			d.PanicIfFalse(c.asSequence().isLeaf())
 		}
 
-		return seqs, startIdx
+		return cols, startIdx
 	}
 
-	level := seqs[0].treeLevel()
+	level := cols[0].asSequence().treeLevel()
 	childTuples := []metaTuple{}
 
 	cum := uint64(0)
-	for _, s := range seqs {
+	for _, c := range cols {
+		s := c.asSequence()
 		d.PanicIfFalse(s.treeLevel() == level)
 		ms := s.(metaSequence)
 
-		for _, mt := range ms.tuples {
-			if cum == 0 && mt.numLeaves <= startIdx {
+		for _, mt := range ms.tuples() {
+			numLeaves := mt.numLeaves()
+			if cum == 0 && numLeaves <= startIdx {
 				// skip tuples whose items are < startIdx
-				startIdx -= mt.numLeaves
-				endIdx -= mt.numLeaves
+				startIdx -= numLeaves
+				endIdx -= numLeaves
 				continue
 			}
 
 			childTuples = append(childTuples, mt)
-			cum += mt.numLeaves
+			cum += numLeaves
 			if cum >= endIdx {
 				break
 			}
 		}
 	}
 
-	hs := hash.HashSet{}
-	for _, mt := range childTuples {
-		if mt.child != nil {
-			continue
-		}
-		hs.Insert(mt.ref.TargetHash())
+	hs := make(hash.HashSlice, len(childTuples))
+	for i, mt := range childTuples {
+		hs[i] = mt.ref().TargetHash()
 	}
 
 	// Fetch committed child sequences in a single batch
-	fetched := make(map[hash.Hash]sequence, len(hs))
-	if len(hs) > 0 {
-		valueChan := make(chan Value, len(hs))
-		go func() {
-			d.PanicIfTrue(vr == nil)
-			vr.ReadManyValues(hs, valueChan)
-			close(valueChan)
-		}()
-		for value := range valueChan {
-			fetched[value.Hash()] = value.(Collection).sequence()
-		}
+	readValues := vrw.ReadManyValues(hs)
+
+	childCols := make([]Collection, len(readValues))
+	for i, v := range readValues {
+		childCols[i] = v.(Collection)
 	}
 
-	childSeqs := make([]sequence, len(childTuples))
-	for i, mt := range childTuples {
-		if mt.child != nil {
-			childSeqs[i] = mt.child.sequence()
-			continue
-		}
-
-		childSeqs[i] = fetched[mt.ref.TargetHash()]
-	}
-
-	return loadLeafSequences(vr, childSeqs, startIdx, endIdx)
+	return LoadLeafNodes(childCols, startIdx, endIdx)
 }

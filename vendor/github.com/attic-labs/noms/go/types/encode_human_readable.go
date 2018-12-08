@@ -9,11 +9,79 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/util/writers"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/util/writers"
 	humanize "github.com/dustin/go-humanize"
 )
+
+// Clients can register a 'commenter' to return a comment that will get appended
+// to the first line of encoded values. For example, the noms DateTime struct
+// normally gets encoded as follows:
+//    lastRefresh: DateTime {
+//      secSinceEpoch: 1.501801626877e+09,
+//    }
+//
+// By registering a commenter that returns a nicely formatted date,
+// the struct will be coded with a comment:
+//    lastRefresh: DateTime { // 2017-08-03T16:07:06-07:00
+//      secSinceEpoch: 1.501801626877e+09,
+//    }
+
+// Function type for commenter functions
+type HRSCommenter interface {
+	Comment(Value) string
+}
+
+var (
+	commenterRegistry = map[string]map[string]HRSCommenter{}
+	registryLock      sync.RWMutex
+)
+
+// RegisterHRSCommenter is called to with three arguments:
+//  typename: the name of the struct this function will be applied to
+//  unique: an arbitrary string to differentiate functions that should be applied
+//    to different structs that have the same name (e.g. two implementations of
+//    the "Employee" type.
+//  commenter: an interface with a 'Comment()' function that gets called for all
+//    Values with this name. The function should verify the type of the Value
+//    and, if appropriate, return a non-empty string to be appended as the comment
+func RegisterHRSCommenter(typename, unique string, commenter HRSCommenter) {
+	registryLock.Lock()
+	defer registryLock.Unlock()
+	commenters := commenterRegistry[typename]
+	if commenters == nil {
+		commenters = map[string]HRSCommenter{}
+		commenterRegistry[typename] = commenters
+	}
+	commenters[unique] = commenter
+}
+
+// UnregisterHRSCommenter will remove a commenter function for a specified
+// typename/unique string combination.
+func UnregisterHRSCommenter(typename, unique string) {
+	registryLock.Lock()
+	defer registryLock.Unlock()
+	r := commenterRegistry[typename]
+	if r == nil {
+		return
+	}
+	delete(r, unique)
+}
+
+// GetHRSCommenters the map of 'unique' strings to HRSCommentFunc for
+// a specified typename.
+func GetHRSCommenters(typename string) []HRSCommenter {
+	registryLock.RLock()
+	defer registryLock.RUnlock()
+	// need to copy this value so we can release the lock
+	commenters := []HRSCommenter{}
+	for _, f := range commenterRegistry[typename] {
+		commenters = append(commenters, f)
+	}
+	return commenters
+}
 
 // Human Readable Serialization
 type hrsWriter struct {
@@ -67,12 +135,15 @@ type hexWriter struct {
 
 func (w *hexWriter) Write(p []byte) (n int, err error) {
 	for _, v := range p {
+		if !w.sizeWritten && len(p) > 16 {
+			w.hrs.write("  // ")
+			w.hrs.write(humanize.Bytes(w.size))
+			w.sizeWritten = true
+			w.hrs.indent()
+			w.hrs.newLine()
+		}
+
 		if w.count == 16 {
-			if !w.sizeWritten {
-				w.hrs.write("  // ")
-				w.hrs.write(humanize.Bytes(w.size))
-				w.sizeWritten = true
-			}
 			w.hrs.newLine()
 			w.count = 0
 		} else if w.count != 0 {
@@ -89,6 +160,12 @@ func (w *hexWriter) Write(p []byte) (n int, err error) {
 		n++
 		w.count++
 	}
+
+	if w.sizeWritten {
+		w.hrs.outdent()
+		w.hrs.newLine()
+	}
+
 	return
 }
 
@@ -103,10 +180,11 @@ func (w *hrsWriter) Write(v Value) {
 		w.write(strconv.Quote(string(v.(String))))
 
 	case BlobKind:
-		w.maybeWriteIndentation()
+		w.write("blob {")
 		blob := v.(Blob)
 		encoder := &hexWriter{hrs: w, size: blob.Len()}
 		_, w.err = io.Copy(encoder, blob.Reader())
+		w.write("}")
 
 	case ListKind:
 		w.write("[")
@@ -125,7 +203,7 @@ func (w *hrsWriter) Write(v Value) {
 		w.write("]")
 
 	case MapKind:
-		w.write("{")
+		w.write("map {")
 		w.writeSize(v)
 		w.indent()
 		if !v.(Map).Empty() {
@@ -143,10 +221,11 @@ func (w *hrsWriter) Write(v Value) {
 		w.write("}")
 
 	case RefKind:
+		w.write("#")
 		w.write(v.(Ref).TargetHash().String())
 
 	case SetKind:
-		w.write("{")
+		w.write("set {")
 		w.writeSize(v)
 		w.indent()
 		if !v.(Set).Empty() {
@@ -165,55 +244,60 @@ func (w *hrsWriter) Write(v Value) {
 		w.writeType(v.(*Type), map[*Type]struct{}{})
 
 	case StructKind:
-		w.writeStruct(v.(Struct), true)
+		w.writeStruct(v.(Struct))
 
 	default:
 		panic("unreachable")
 	}
 }
 
-func (w *hrsWriter) writeStruct(v Struct, printStructName bool) {
-	if printStructName {
-		w.write(v.name)
+type hrsStructWriter struct {
+	*hrsWriter
+	v Struct
+}
+
+func (w hrsStructWriter) name(n string) {
+	w.write("struct ")
+	if n != "" {
+		w.write(n)
 		w.write(" ")
 	}
 	w.write("{")
+	commenters := GetHRSCommenters(n)
+	for _, commenter := range commenters {
+		if comment := commenter.Comment(w.v); comment != "" {
+			w.write(" // " + comment)
+			break
+		}
+
+	}
 	w.indent()
+}
 
-	if len(v.fieldNames) > 0 {
+func (w hrsStructWriter) count(c uint64) {
+	if c > 0 {
 		w.newLine()
 	}
-	for i := 0; i < len(v.fieldNames); i++ {
-		w.write(v.fieldNames[i])
-		w.write(": ")
-		w.Write(v.values[i])
-		w.write(",")
-		w.newLine()
-	}
+}
 
+func (w hrsStructWriter) fieldName(n string) {
+	w.write(n)
+	w.write(": ")
+}
+
+func (w hrsStructWriter) fieldValue(v Value) {
+	w.Write(v)
+	w.write(",")
+	w.newLine()
+}
+
+func (w hrsStructWriter) end() {
 	w.outdent()
 	w.write("}")
 }
 
-func (w *hrsWriter) WriteTagged(v Value) {
-	t := TypeOf(v)
-	switch t.TargetKind() {
-	case BoolKind, NumberKind, StringKind:
-		w.Write(v)
-	case BlobKind, ListKind, MapKind, RefKind, SetKind, TypeKind, CycleKind:
-		w.writeType(t, map[*Type]struct{}{})
-		w.write("(")
-		w.Write(v)
-		w.write(")")
-	case StructKind:
-		w.writeType(t, map[*Type]struct{}{})
-		w.write("(")
-		w.writeStruct(v.(Struct), false)
-		w.write(")")
-	case ValueKind:
-	default:
-		panic("unreachable")
-	}
+func (w *hrsWriter) writeStruct(v Struct) {
+	v.iterParts(hrsStructWriter{w, v})
 }
 
 func (w *hrsWriter) writeSize(v Value) {
@@ -286,7 +370,7 @@ func (w *hrsWriter) writeStructType(t *Type, seenStructs map[*Type]struct{}) {
 	seenStructs[t] = struct{}{}
 
 	desc := t.Desc.(StructDesc)
-	w.write("struct ")
+	w.write("Struct ")
 	if desc.Name != "" {
 		w.write(desc.Name + " ")
 	}
@@ -350,26 +434,11 @@ func WriteEncodedValue(w io.Writer, v Value) error {
 	return hrs.err
 }
 
-// WriteEncodedValue writes the serialization of a value. Writing will be
+// WriteEncodedValueMaxLines writes the serialization of a value. Writing will be
 // stopped and an error returned after |maxLines|.
 func WriteEncodedValueMaxLines(w io.Writer, v Value, maxLines uint32) error {
 	mlw := &writers.MaxLineWriter{Dest: w, MaxLines: maxLines}
 	hrs := &hrsWriter{w: mlw, floatFormat: 'g'}
 	hrs.Write(v)
-	return hrs.err
-}
-
-func EncodedValueWithTags(v Value) string {
-	var buf bytes.Buffer
-	w := &hrsWriter{w: &buf, floatFormat: 'g'}
-	w.WriteTagged(v)
-	d.Chk.NoError(w.err)
-	return buf.String()
-}
-
-// WriteEncodedValueWithTags writes the serialization of a value prefixed by its type.
-func WriteEncodedValueWithTags(w io.Writer, v Value) error {
-	hrs := &hrsWriter{w: w, floatFormat: 'g'}
-	hrs.WriteTagged(v)
 	return hrs.err
 }

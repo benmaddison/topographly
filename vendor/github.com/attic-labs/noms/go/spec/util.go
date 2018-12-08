@@ -5,8 +5,8 @@
 package spec
 
 import (
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
 )
 
 func CreateDatabaseSpecString(protocol, db string) string {

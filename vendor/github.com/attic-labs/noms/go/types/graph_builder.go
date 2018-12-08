@@ -43,7 +43,7 @@ import (
 	"fmt"
 	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 type GraphBuilder struct {
@@ -54,7 +54,7 @@ type GraphBuilder struct {
 	mutex    sync.Mutex
 }
 
-// NewGraphBuilder() returns an new GraphBuilder object.
+// NewGraphBuilder returns an new GraphBuilder object.
 func NewGraphBuilder(vrw ValueReadWriter, rootKind NomsKind) *GraphBuilder {
 	return newGraphBuilder(vrw, newLdbOpCacheStore(vrw), rootKind)
 }
@@ -65,7 +65,7 @@ func newGraphBuilder(vrw ValueReadWriter, opcStore opCacheStore, rootKind NomsKi
 	return b
 }
 
-// MapSet() will add the key/value pair |k, v| to the map found by traversing
+// MapSet will add the key/value pair |k, v| to the map found by traversing
 // the graph using the |keys| slice. Intermediate maps referenced by |keys| are
 // created as necessary. This is threadsafe, may call from multiple go routines.
 func (b *GraphBuilder) MapSet(keys []Value, k Value, v Value) {
@@ -75,7 +75,7 @@ func (b *GraphBuilder) MapSet(keys []Value, k Value, v Value) {
 	b.oc.GraphMapSet(keys, k, v)
 }
 
-// SetInsert() will insert the value |v| into the set at path |keys|. Intermediate
+// SetInsert will insert the value |v| into the set at path |keys|. Intermediate
 // maps referenced by |keys| are created as necessary. This is threadsafe, may
 // call from multiple go routines.
 func (b *GraphBuilder) SetInsert(keys []Value, v Value) {
@@ -85,7 +85,7 @@ func (b *GraphBuilder) SetInsert(keys []Value, v Value) {
 	b.oc.GraphSetInsert(keys, v)
 }
 
-// ListAppends() will append |v| to the list at path |p|. Intermediate
+// ListAppend will append |v| to the list at path |p|. Intermediate
 // maps referenced by |keys| are created as necessary. This is threadsafe, may
 // call from multiple go routines, however append semantics are such that the
 // elements will be appended in order that functions are called, so order has
@@ -103,7 +103,7 @@ type graphOpContainer struct {
 	item sequenceItem
 }
 
-// Builds and returns the graph. This method should only be called after all
+// Build builds and returns the graph. This method should only be called after all
 // calls to the mutation operations (i.e. MapSet, SetInsert, and ListAppend)
 // have completed. It is the caller's responsibility to ensure that this is
 // the case. Build() will panic if called more than once on any GraphBuilder
@@ -199,11 +199,11 @@ func (b *GraphBuilder) pushNewKeyOnStack(key Value, kind NomsKind) {
 	var ch *sequenceChunker
 	switch kind {
 	case MapKind:
-		ch = newEmptyMapSequenceChunker(b.vrw, b.vrw)
+		ch = newEmptyMapSequenceChunker(b.vrw)
 	case SetKind:
-		ch = newEmptySetSequenceChunker(b.vrw, b.vrw)
+		ch = newEmptySetSequenceChunker(b.vrw)
 	case ListKind:
-		ch = newEmptyListSequenceChunker(b.vrw, b.vrw)
+		ch = newEmptyListSequenceChunker(b.vrw)
 	default:
 		panic("bad 'kind' value in GraphBuilder, newElem()")
 	}

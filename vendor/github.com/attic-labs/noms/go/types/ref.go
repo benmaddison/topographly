@@ -4,29 +4,79 @@
 
 package types
 
-import "gopkg.in/attic-labs/noms.v7/go/hash"
+import (
+	"bytes"
+
+	"github.com/attic-labs/noms/go/hash"
+)
 
 type Ref struct {
-	target     hash.Hash
-	targetType *Type
-	height     uint64
-	h          *hash.Hash
+	valueImpl
 }
 
+type refPart uint32
+
+const (
+	refPartKind refPart = iota
+	refPartTargetHash
+	refPartTargetType
+	refPartHeight
+	refPartEnd
+)
+
 func NewRef(v Value) Ref {
-	// TODO: Taking the hash will duplicate the work of computing the type
-	return Ref{v.Hash(), TypeOf(v), maxChunkHeight(v) + 1, &hash.Hash{}}
+	return constructRef(v.Hash(), TypeOf(v), maxChunkHeight(v)+1)
 }
 
 // ToRefOfValue returns a new Ref that points to the same target as |r|, but
 // with the type 'Ref<Value>'.
 func ToRefOfValue(r Ref) Ref {
-	return Ref{r.TargetHash(), ValueType, r.Height(), &hash.Hash{}}
+	return constructRef(r.TargetHash(), ValueType, r.Height())
 }
 
-// Constructs a Ref directly from struct properties. This should not be used outside decoding and testing within the types package.
-func constructRef(target hash.Hash, targetType *Type, height uint64) Ref {
-	return Ref{target, targetType, height, &hash.Hash{}}
+func constructRef(targetHash hash.Hash, targetType *Type, height uint64) Ref {
+	w := newBinaryNomsWriter()
+
+	offsets := make([]uint32, refPartEnd)
+	offsets[refPartKind] = w.offset
+	RefKind.writeTo(&w)
+	offsets[refPartTargetHash] = w.offset
+	w.writeHash(targetHash)
+	offsets[refPartTargetType] = w.offset
+	targetType.writeToAsType(&w, map[string]*Type{})
+	offsets[refPartHeight] = w.offset
+	w.writeCount(height)
+
+	return Ref{valueImpl{nil, w.data(), offsets}}
+}
+
+func writeRefPartsTo(w nomsWriter, targetHash hash.Hash, targetType *Type, height uint64) {
+	RefKind.writeTo(w)
+	w.writeHash(targetHash)
+	targetType.writeToAsType(w, map[string]*Type{})
+	w.writeCount(height)
+}
+
+// readRef reads the data provided by a reader and moves the reader forward.
+func readRef(dec *typedBinaryNomsReader) Ref {
+	start := dec.pos()
+	offsets := skipRef(dec)
+	end := dec.pos()
+	return Ref{valueImpl{nil, dec.byteSlice(start, end), offsets}}
+}
+
+// skipRef moves the reader forward, past the data representing the Ref, and returns the offsets of the component parts.
+func skipRef(dec *typedBinaryNomsReader) []uint32 {
+	offsets := make([]uint32, refPartEnd)
+	offsets[refPartKind] = dec.pos()
+	dec.skipKind()
+	offsets[refPartTargetHash] = dec.pos()
+	dec.skipHash() // targetHash
+	offsets[refPartTargetType] = dec.pos()
+	dec.skipType() // targetType
+	offsets[refPartHeight] = dec.pos()
+	dec.skipCount() // height
+	return offsets
 }
 
 func maxChunkHeight(v Value) (max uint64) {
@@ -38,54 +88,48 @@ func maxChunkHeight(v Value) (max uint64) {
 	return
 }
 
+func (r Ref) offsetAtPart(part refPart) uint32 {
+	return r.offsets[part] - r.offsets[refPartKind]
+}
+
+func (r Ref) decoderAtPart(part refPart) valueDecoder {
+	offset := r.offsetAtPart(part)
+	return newValueDecoder(r.buff[offset:], nil)
+}
+
 func (r Ref) TargetHash() hash.Hash {
-	return r.target
+	dec := r.decoderAtPart(refPartTargetHash)
+	return dec.readHash()
 }
 
 func (r Ref) Height() uint64 {
-	return r.height
+	dec := r.decoderAtPart(refPartHeight)
+	return dec.readCount()
 }
 
 func (r Ref) TargetValue(vr ValueReader) Value {
-	return vr.ReadValue(r.target)
+	return vr.ReadValue(r.TargetHash())
 }
 
 func (r Ref) TargetType() *Type {
-	return r.targetType
+	dec := r.decoderAtPart(refPartTargetType)
+	return dec.readType()
 }
 
 // Value interface
-func (r Ref) Value(vrw ValueReadWriter) Value {
+func (r Ref) Value() Value {
 	return r
-}
-
-func (r Ref) Equals(other Value) bool {
-	return r.Hash() == other.Hash()
-}
-
-func (r Ref) Less(other Value) bool {
-	return valueLess(r, other)
-}
-
-func (r Ref) Hash() hash.Hash {
-	if r.h.IsEmpty() {
-		*r.h = getHash(r)
-	}
-
-	return *r.h
 }
 
 func (r Ref) WalkValues(cb ValueCallback) {
 }
 
-func (r Ref) WalkRefs(cb RefCallback) {
-	cb(r)
-}
-
 func (r Ref) typeOf() *Type {
-	return makeCompoundType(RefKind, r.targetType)
+	return makeCompoundType(RefKind, r.TargetType())
 }
 
-func (r Ref) Kind() NomsKind {
-	return RefKind
+func (r Ref) isSameTargetType(other Ref) bool {
+	targetTypeBytes := r.buff[r.offsetAtPart(refPartTargetType):r.offsetAtPart(refPartHeight)]
+	otherTargetTypeBytes := other.buff[other.offsetAtPart(refPartTargetType):other.offsetAtPart(refPartHeight)]
+	return bytes.Equal(targetTypeBytes, otherTargetTypeBytes)
 }

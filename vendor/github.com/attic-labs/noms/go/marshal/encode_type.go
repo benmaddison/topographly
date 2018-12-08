@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"gopkg.in/attic-labs/noms.v7/go/types"
+	"github.com/attic-labs/noms/go/types"
 )
 
 // MarshalType computes a Noms type from a Go type

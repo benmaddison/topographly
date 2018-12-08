@@ -5,40 +5,39 @@
 package types
 
 import (
-	"sort"
-
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 type orderedSequence interface {
 	sequence
 	getKey(idx int) orderedKey
+	search(key orderedKey) int
 }
 
-func newSetMetaSequence(level uint64, tuples []metaTuple, vr ValueReader) metaSequence {
-	return newMetaSequence(SetKind, level, tuples, vr)
+func newSetMetaSequence(level uint64, tuples []metaTuple, vrw ValueReadWriter) metaSequence {
+	return newMetaSequenceFromTuples(SetKind, level, tuples, vrw)
 }
 
-func newMapMetaSequence(level uint64, tuples []metaTuple, vr ValueReader) metaSequence {
-	return newMetaSequence(MapKind, level, tuples, vr)
+func newMapMetaSequence(level uint64, tuples []metaTuple, vrw ValueReadWriter) metaSequence {
+	return newMetaSequenceFromTuples(MapKind, level, tuples, vrw)
 }
 
-func newCursorAtValue(seq orderedSequence, val Value, forInsertion bool, last bool, readAhead bool) *sequenceCursor {
+func newCursorAtValue(seq orderedSequence, val Value, forInsertion bool, last bool) *sequenceCursor {
 	var key orderedKey
 	if val != nil {
 		key = newOrderedKey(val)
 	}
-	return newCursorAt(seq, key, forInsertion, last, readAhead)
+	return newCursorAt(seq, key, forInsertion, last)
 }
 
-func newCursorAt(seq orderedSequence, key orderedKey, forInsertion bool, last bool, readAhead bool) *sequenceCursor {
+func newCursorAt(seq orderedSequence, key orderedKey, forInsertion bool, last bool) *sequenceCursor {
 	var cur *sequenceCursor
 	for {
 		idx := 0
 		if last {
 			idx = -1
 		}
-		cur = newSequenceCursor(cur, seq, idx, readAhead)
+		cur = newSequenceCursor(cur, seq, idx)
 		if key != emptyKey {
 			if !seekTo(cur, key, forInsertion && !seq.isLeaf()) {
 				return cur
@@ -59,16 +58,14 @@ func seekTo(cur *sequenceCursor, key orderedKey, lastPositionIfNotFound bool) bo
 	seq := cur.seq.(orderedSequence)
 
 	// Find smallest idx in seq where key(idx) >= key
-	cur.idx = sort.Search(seq.seqLen(), func(i int) bool {
-		return !seq.getKey(i).Less(key)
-	})
-
-	if cur.idx == seq.seqLen() && lastPositionIfNotFound {
+	cur.idx = seq.search(key)
+	seqLen := seq.seqLen()
+	if cur.idx == seqLen && lastPositionIfNotFound {
 		d.PanicIfFalse(cur.idx > 0)
 		cur.idx--
 	}
 
-	return cur.idx < seq.seqLen()
+	return cur.idx < seqLen
 }
 
 // Gets the key used for ordering the sequence at current index.
@@ -90,7 +87,7 @@ func getMapValue(cur *sequenceCursor) Value {
 
 // If |vw| is not nil, chunks will be eagerly written as they're created. Otherwise they are
 // written when the root is written.
-func newOrderedMetaSequenceChunkFn(kind NomsKind, vr ValueReader) makeChunkFn {
+func newOrderedMetaSequenceChunkFn(kind NomsKind, vrw ValueReadWriter) makeChunkFn {
 	return func(level uint64, items []sequenceItem) (Collection, orderedKey, uint64) {
 		tuples := make([]metaTuple, len(items))
 		numLeaves := uint64(0)
@@ -98,20 +95,21 @@ func newOrderedMetaSequenceChunkFn(kind NomsKind, vr ValueReader) makeChunkFn {
 		var lastKey orderedKey
 		for i, v := range items {
 			mt := v.(metaTuple)
-			d.PanicIfFalse(lastKey == emptyKey || lastKey.Less(mt.key))
-			lastKey = mt.key
+			key := mt.key()
+			d.PanicIfFalse(lastKey == emptyKey || lastKey.Less(key))
+			lastKey = key
 			tuples[i] = mt // chunk is written when the root sequence is written
-			numLeaves += mt.numLeaves
+			numLeaves += mt.numLeaves()
 		}
 
 		var col Collection
 		if kind == SetKind {
-			col = newSet(newSetMetaSequence(level, tuples, vr))
+			col = newSet(newSetMetaSequence(level, tuples, vrw))
 		} else {
 			d.PanicIfFalse(MapKind == kind)
-			col = newMap(newMapMetaSequence(level, tuples, vr))
+			col = newMap(newMapMetaSequence(level, tuples, vrw))
 		}
 
-		return col, tuples[len(tuples)-1].key, numLeaves
+		return col, tuples[len(tuples)-1].key(), numLeaves
 	}
 }

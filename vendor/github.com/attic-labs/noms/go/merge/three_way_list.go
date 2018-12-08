@@ -7,8 +7,8 @@ package merge
 import (
 	"fmt"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/types"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/types"
 )
 
 func threeWayListMerge(a, b, parent types.List) (merged types.List, err error) {
@@ -120,7 +120,7 @@ func apply(source, target types.List, offset uint64, s types.Splice) types.List 
 		}
 		toAdd[i] = v
 	}
-	return target.Edit().Splice(s.SpAt+offset, s.SpRemoved, toAdd...).List(nil)
+	return target.Edit().Splice(s.SpAt+offset, s.SpRemoved, toAdd...).List()
 }
 
 func describeSplice(s types.Splice) string {

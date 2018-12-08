@@ -1,8 +1,0 @@
-{
-   "child": {
-      "config": {
-         "field-one": "hello",
-         "field-two": 42
-      }
-   }
-}

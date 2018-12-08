@@ -5,10 +5,9 @@
 package types
 
 import (
-	"fmt"
 	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/d"
 )
 
 type ListEditor struct {
@@ -24,21 +23,17 @@ func (le *ListEditor) Kind() NomsKind {
 	return ListKind
 }
 
-func (le *ListEditor) Value(vrw ValueReadWriter) Value {
-	return le.List(vrw)
+func (le *ListEditor) Value() Value {
+	return le.List()
 }
 
-func (le *ListEditor) List(vrw ValueReadWriter) List {
+func (le *ListEditor) List() List {
 	if le.edits == nil {
 		return le.l // no edits
 	}
 
-	seq := le.l.sequence()
-	vr := seq.valueReader()
-
-	if vrw != nil {
-		vr = vrw
-	}
+	seq := le.l.sequence
+	vrw := seq.valueReadWriter()
 
 	cursChan := make(chan chan *sequenceCursor)
 	spliceChan := make(chan chan listEdit)
@@ -52,7 +47,7 @@ func (le *ListEditor) List(vrw ValueReadWriter) List {
 			cursChan <- cc
 
 			go func() {
-				cc <- newCursorAtIndex(seq, edit.idx, false)
+				cc <- newCursorAtIndex(seq, edit.idx)
 			}()
 
 			sc := make(chan listEdit, 1)
@@ -66,10 +61,10 @@ func (le *ListEditor) List(vrw ValueReadWriter) List {
 				}
 
 				subEditors = true
-				idx := i
+				idx, val := i, v
 				wg.Add(1)
 				go func() {
-					edit.inserted[idx] = v.Value(vrw)
+					edit.inserted[idx] = val.Value()
 					wg.Done()
 				}()
 			}
@@ -94,7 +89,7 @@ func (le *ListEditor) List(vrw ValueReadWriter) List {
 		sp := <-<-spliceChan
 
 		if ch == nil {
-			ch = newSequenceChunker(cur, 0, vr, vrw, makeListLeafChunkFn(vr), newIndexedMetaSequenceChunkFn(ListKind, vr), hashValueBytes)
+			ch = newSequenceChunker(cur, 0, vrw, makeListLeafChunkFn(vrw), newIndexedMetaSequenceChunkFn(ListKind, vrw), hashValueBytes)
 		} else {
 			ch.advanceTo(cur)
 		}
@@ -117,7 +112,7 @@ func (le *ListEditor) List(vrw ValueReadWriter) List {
 	return newList(ch.Done())
 }
 
-func collapse(newEdit, edit *listEdit) bool {
+func collapseListEdit(newEdit, edit *listEdit) bool {
 	if newEdit.idx+newEdit.removed < edit.idx ||
 		edit.idx+uint64(len(edit.inserted)) < newEdit.idx {
 		return false
@@ -179,13 +174,6 @@ func (le *ListEditor) Len() uint64 {
 	return uint64(int64(le.l.Len()) + delta)
 }
 
-func (le *ListEditor) dump() {
-	fmt.Println("ListEditor", le.Len())
-	for edit := le.edits; edit != nil; edit = edit.next {
-		fmt.Println("Edit", edit.idx, edit.removed, edit.inserted)
-	}
-}
-
 func (le *ListEditor) Splice(idx uint64, deleteCount uint64, vs ...Valuable) *ListEditor {
 	for _, sv := range vs {
 		d.PanicIfTrue(sv == nil)
@@ -197,7 +185,7 @@ func (le *ListEditor) Splice(idx uint64, deleteCount uint64, vs ...Valuable) *Li
 	edit := le.edits
 
 	for edit != nil {
-		if collapse(ne, edit) {
+		if collapseListEdit(ne, edit) {
 			if last == nil {
 				le.edits = edit.next
 			} else {

@@ -5,8 +5,8 @@
 package types
 
 import (
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/d"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/d"
 )
 
 type ValidatingDecoder struct {

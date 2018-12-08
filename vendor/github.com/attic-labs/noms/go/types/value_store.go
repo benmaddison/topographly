@@ -7,11 +7,11 @@ package types
 import (
 	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/chunks"
-	"gopkg.in/attic-labs/noms.v7/go/constants"
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
-	"gopkg.in/attic-labs/noms.v7/go/util/sizecache"
+	"github.com/attic-labs/noms/go/chunks"
+	"github.com/attic-labs/noms/go/constants"
+	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/hash"
+	"github.com/attic-labs/noms/go/util/sizecache"
 )
 
 // ValueReader is an interface that knows how to read Noms Values, e.g.
@@ -19,7 +19,7 @@ import (
 // package that implements Value reading.
 type ValueReader interface {
 	ReadValue(h hash.Hash) Value
-	ReadManyValues(hashes hash.HashSet, foundValues chan<- Value)
+	ReadManyValues(hashes hash.HashSlice) ValueSlice
 }
 
 // ValueWriter is an interface that knows how to write Noms Values, e.g.
@@ -144,24 +144,27 @@ func (lvs *ValueStore) ReadValue(h hash.Hash) Value {
 	return v
 }
 
-// ReadManyValues reads and decodes Values indicated by |hashes| from lvs. On
-// return, |foundValues| will have been fully sent all Values which have been
-// found. Any non-present Values will silently be ignored.
-func (lvs *ValueStore) ReadManyValues(hashes hash.HashSet, foundValues chan<- Value) {
+// ReadManyValues reads and decodes Values indicated by |hashes| from lvs and
+// returns the found Values in the same order. Any non-present Values will be
+// represented by nil.
+func (lvs *ValueStore) ReadManyValues(hashes hash.HashSlice) ValueSlice {
 	lvs.versOnce.Do(lvs.expectVersion)
-	decode := func(h hash.Hash, chunk *chunks.Chunk, toPending bool) Value {
+	decode := func(h hash.Hash, chunk *chunks.Chunk) Value {
 		v := DecodeValue(*chunk, lvs)
 		d.PanicIfTrue(v == nil)
 		lvs.decodedChunks.Add(h, uint64(len(chunk.Data())), v)
 		return v
 	}
 
-	// First, see which hashes can be found in either the Value cache or bufferedChunks. Put the rest into a new HashSet to be requested en masse from the ChunkStore.
+	foundValues := make(map[hash.Hash]Value, len(hashes))
+
+	// First, see which hashes can be found in either the Value cache or bufferedChunks.
+	// Put the rest into a new HashSet to be requested en masse from the ChunkStore.
 	remaining := hash.HashSet{}
-	for h := range hashes {
+	for _, h := range hashes {
 		if v, ok := lvs.decodedChunks.Get(h); ok {
 			d.PanicIfTrue(v == nil)
-			foundValues <- v.(Value)
+			foundValues[h] = v.(Value)
 			continue
 		}
 
@@ -174,39 +177,35 @@ func (lvs *ValueStore) ReadManyValues(hashes hash.HashSet, foundValues chan<- Va
 			return chunks.EmptyChunk
 		}()
 		if !chunk.IsEmpty() {
-			foundValues <- decode(h, &chunk, true)
+			foundValues[h] = decode(h, &chunk)
 			continue
 		}
 
 		remaining.Insert(h)
 	}
 
-	if len(remaining) == 0 {
-		return
+	if len(remaining) != 0 {
+		// Request remaining hashes from ChunkStore, processing the found chunks as they come in.
+		foundChunks := make(chan *chunks.Chunk, 16)
+
+		go func() { lvs.cs.GetMany(remaining, foundChunks); close(foundChunks) }()
+		for c := range foundChunks {
+			h := c.Hash()
+			foundValues[h] = decode(h, c)
+		}
 	}
 
-	// Request remaining hashes from ChunkStore, processing the found chunks as they come in.
-	foundChunks := make(chan *chunks.Chunk, 16)
-
-	go func() { lvs.cs.GetMany(remaining, foundChunks); close(foundChunks) }()
-	for c := range foundChunks {
-		h := c.Hash()
-		foundValues <- decode(h, c, false)
+	rv := make(ValueSlice, len(hashes))
+	for i, h := range hashes {
+		rv[i] = foundValues[h]
 	}
+	return rv
 }
 
 // WriteValue takes a Value, schedules it to be written it to lvs, and returns
 // an appropriately-typed types.Ref. v is not guaranteed to be actually
 // written until after Flush().
 func (lvs *ValueStore) WriteValue(v Value) Ref {
-	iterateUncommittedChildren(v, func(sv Value) {
-		lvs.writeValueInternal(sv)
-	})
-
-	return lvs.writeValueInternal(v)
-}
-
-func (lvs *ValueStore) writeValueInternal(v Value) Ref {
 	lvs.versOnce.Do(lvs.expectVersion)
 	d.PanicIfFalse(v != nil)
 
@@ -251,8 +250,7 @@ func (lvs *ValueStore) bufferChunk(v Value, c chunks.Chunk, height uint64) {
 		if !isBuffered {
 			return
 		}
-		pv := DecodeValue(pending, lvs)
-		pv.WalkRefs(func(grandchildRef Ref) {
+		WalkRefs(pending, func(grandchildRef Ref) {
 			gch := grandchildRef.TargetHash()
 			if pending, present := lvs.bufferedChunks[gch]; present {
 				put(gch, pending)
@@ -330,8 +328,7 @@ func (lvs *ValueStore) Commit(current, last hash.Hash) bool {
 
 		for parent := range lvs.withBufferedChildren {
 			if pending, present := lvs.bufferedChunks[parent]; present {
-				v := DecodeValue(pending, lvs)
-				v.WalkRefs(func(reachable Ref) {
+				WalkRefs(pending, func(reachable Ref) {
 					if pending, present := lvs.bufferedChunks[reachable.TargetHash()]; present {
 						put(reachable.TargetHash(), pending)
 					}

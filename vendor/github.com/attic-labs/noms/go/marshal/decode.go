@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"sync"
 
-	"gopkg.in/attic-labs/noms.v7/go/types"
+	"github.com/attic-labs/noms/go/types"
 )
 
 // Unmarshal converts a Noms value into a Go value. It decodes v and stores the

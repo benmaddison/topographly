@@ -8,22 +8,20 @@ import (
 	"fmt"
 	"sort"
 
-	"gopkg.in/attic-labs/noms.v7/go/d"
-	"gopkg.in/attic-labs/noms.v7/go/hash"
+	"github.com/attic-labs/noms/go/d"
 )
 
 type Set struct {
-	seq orderedSequence
-	h   *hash.Hash
+	orderedSequence
 }
 
 func newSet(seq orderedSequence) Set {
-	return Set{seq, &hash.Hash{}}
+	return Set{seq}
 }
 
-func NewSet(v ...Value) Set {
+func NewSet(vrw ValueReadWriter, v ...Value) Set {
 	data := buildSetData(v)
-	ch := newEmptySetSequenceChunker(nil, nil)
+	ch := newEmptySetSequenceChunker(vrw)
 
 	for _, v := range data {
 		ch.Append(v)
@@ -38,22 +36,34 @@ func NewSet(v ...Value) Set {
 // out of order will result in a panic. Once the input channel is closed
 // by the caller, a finished Set will be sent to the output channel. See
 // graph_builder.go for building collections with values that are not in order.
-func NewStreamingSet(vrw ValueReadWriter, vals <-chan Value) <-chan Set {
+func NewStreamingSet(vrw ValueReadWriter, vChan <-chan Value) <-chan Set {
+	return newStreamingSet(vrw, vChan, func(vrw ValueReadWriter, vChan <-chan Value, outChan chan<- Set) {
+		go readSetInput(vrw, vChan, outChan)
+	})
+}
+
+type streamingSetReadFunc func(vrw ValueReadWriter, vChan <-chan Value, outChan chan<- Set)
+
+func newStreamingSet(vrw ValueReadWriter, vChan <-chan Value, readFunc streamingSetReadFunc) <-chan Set {
+	d.PanicIfTrue(vrw == nil)
 	outChan := make(chan Set, 1)
-	go func() {
-		defer close(outChan)
-		ch := newEmptySetSequenceChunker(vrw, vrw)
-		var lastV Value
-		for v := range vals {
-			d.PanicIfTrue(v == nil)
-			if lastV != nil {
-				d.PanicIfFalse(lastV == nil || lastV.Less(v))
-			}
-			ch.Append(v)
-		}
-		outChan <- newSet(ch.Done().(orderedSequence))
-	}()
+	readFunc(vrw, vChan, outChan)
 	return outChan
+}
+
+func readSetInput(vrw ValueReadWriter, vChan <-chan Value, outChan chan<- Set) {
+	defer close(outChan)
+	ch := newEmptySetSequenceChunker(vrw)
+	var lastV Value
+	for v := range vChan {
+		d.PanicIfTrue(v == nil)
+		if lastV != nil {
+			d.PanicIfFalse(lastV.Less(v))
+		}
+		lastV = v
+		ch.Append(v)
+	}
+	outChan <- newSet(ch.Done().(orderedSequence))
 }
 
 // Diff computes the diff from |last| to |m| using the top-down algorithm,
@@ -63,7 +73,7 @@ func (s Set) Diff(last Set, changes chan<- ValueChanged, closeChan <-chan struct
 	if s.Equals(last) {
 		return
 	}
-	orderedSequenceDiffTopDown(last.seq, s.seq, changes, closeChan)
+	orderedSequenceDiffTopDown(last.orderedSequence, s.orderedSequence, changes, closeChan)
 }
 
 // DiffHybrid computes the diff from |last| to |s| using a hybrid algorithm
@@ -72,7 +82,7 @@ func (s Set) DiffHybrid(last Set, changes chan<- ValueChanged, closeChan <-chan 
 	if s.Equals(last) {
 		return
 	}
-	orderedSequenceDiffBest(last.seq, s.seq, changes, closeChan)
+	orderedSequenceDiffBest(last.orderedSequence, s.orderedSequence, changes, closeChan)
 }
 
 // DiffLeftRight computes the diff from |last| to |s| using a left-to-right
@@ -82,67 +92,26 @@ func (s Set) DiffLeftRight(last Set, changes chan<- ValueChanged, closeChan <-ch
 	if s.Equals(last) {
 		return
 	}
-	orderedSequenceDiffLeftRight(last.seq, s.seq, changes, closeChan)
+	orderedSequenceDiffLeftRight(last.orderedSequence, s.orderedSequence, changes, closeChan)
 }
 
-// Collection interface
-func (s Set) Len() uint64 {
-	return s.seq.numLeaves()
-}
-
-func (s Set) Empty() bool {
-	return s.Len() == 0
-}
-
-func (s Set) sequence() sequence {
-	return s.seq
-}
-
-func (s Set) hashPointer() *hash.Hash {
-	return s.h
+func (s Set) asSequence() sequence {
+	return s.orderedSequence
 }
 
 // Value interface
-func (s Set) Value(vrw ValueReadWriter) Value {
+func (s Set) Value() Value {
 	return s
 }
 
-func (s Set) Equals(other Value) bool {
-	return s.Hash() == other.Hash()
-}
-
-func (s Set) Less(other Value) bool {
-	return valueLess(s, other)
-}
-
-func (s Set) Hash() hash.Hash {
-	if s.h.IsEmpty() {
-		*s.h = getHash(s)
-	}
-
-	return *s.h
-}
-
 func (s Set) WalkValues(cb ValueCallback) {
-	s.IterAll(func(v Value) {
+	iterAll(s, func(v Value, idx uint64) {
 		cb(v)
 	})
 }
 
-func (s Set) WalkRefs(cb RefCallback) {
-	s.seq.WalkRefs(cb)
-}
-
-func (s Set) typeOf() *Type {
-	return s.seq.typeOf()
-}
-
-func (s Set) Kind() NomsKind {
-	return SetKind
-}
-
 func (s Set) First() Value {
-	cur := newCursorAt(s.seq, emptyKey, false, false, false)
+	cur := newCursorAt(s.orderedSequence, emptyKey, false, false)
 	if !cur.valid() {
 		return nil
 	}
@@ -154,25 +123,19 @@ func (s Set) At(idx uint64) Value {
 		panic(fmt.Errorf("Out of bounds: %d >= %d", idx, s.Len()))
 	}
 
-	cur := newCursorAtIndex(s.seq, idx, false)
+	cur := newCursorAtIndex(s.orderedSequence, idx)
 	return cur.current().(Value)
 }
 
-func (s Set) getCursorAtValue(v Value, readAhead bool) (cur *sequenceCursor, found bool) {
-	cur = newCursorAtValue(s.seq, v, true, false, readAhead)
-	found = cur.idx < cur.seq.seqLen() && cur.current().(Value).Equals(v)
-	return
-}
-
 func (s Set) Has(v Value) bool {
-	cur := newCursorAtValue(s.seq, v, false, false, false)
+	cur := newCursorAtValue(s.orderedSequence, v, false, false)
 	return cur.valid() && cur.current().(Value).Equals(v)
 }
 
 type setIterCallback func(v Value) bool
 
 func (s Set) Iter(cb setIterCallback) {
-	cur := newCursorAt(s.seq, emptyKey, false, false, false)
+	cur := newCursorAt(s.orderedSequence, emptyKey, false, false)
 	cur.iter(func(v interface{}) bool {
 		return cb(v.(Value))
 	})
@@ -181,10 +144,8 @@ func (s Set) Iter(cb setIterCallback) {
 type setIterAllCallback func(v Value)
 
 func (s Set) IterAll(cb setIterAllCallback) {
-	cur := newCursorAt(s.seq, emptyKey, false, false, true)
-	cur.iter(func(v interface{}) bool {
-		cb(v.(Value))
-		return false
+	iterAll(s, func(v Value, idx uint64) {
+		cb(v)
 	})
 }
 
@@ -194,14 +155,14 @@ func (s Set) Iterator() SetIterator {
 
 func (s Set) IteratorAt(idx uint64) SetIterator {
 	return &setIterator{
-		cursor: newCursorAtIndex(s.seq, idx, false),
+		cursor: newCursorAtIndex(s.orderedSequence, idx),
 		s:      s,
 	}
 }
 
 func (s Set) IteratorFrom(val Value) SetIterator {
 	return &setIterator{
-		cursor: newCursorAtValue(s.seq, val, false, false, false),
+		cursor: newCursorAtValue(s.orderedSequence, val, false, false),
 		s:      s,
 	}
 }
@@ -229,7 +190,7 @@ func buildSetData(values ValueSlice) ValueSlice {
 	return append(uniqueSorted, last)
 }
 
-func makeSetLeafChunkFn(vr ValueReader) makeChunkFn {
+func makeSetLeafChunkFn(vrw ValueReadWriter) makeChunkFn {
 	return func(level uint64, items []sequenceItem) (Collection, orderedKey, uint64) {
 		d.PanicIfFalse(level == 0)
 		setData := make([]Value, len(items), len(items))
@@ -242,7 +203,7 @@ func makeSetLeafChunkFn(vr ValueReader) makeChunkFn {
 			setData[i] = v
 		}
 
-		set := newSet(newSetLeafSequence(vr, setData...))
+		set := newSet(newSetLeafSequence(vrw, setData...))
 		var key orderedKey
 		if len(setData) > 0 {
 			key = newOrderedKey(setData[len(setData)-1])
@@ -252,6 +213,6 @@ func makeSetLeafChunkFn(vr ValueReader) makeChunkFn {
 	}
 }
 
-func newEmptySetSequenceChunker(vr ValueReader, vw ValueWriter) *sequenceChunker {
-	return newEmptySequenceChunker(vr, vw, makeSetLeafChunkFn(vr), newOrderedMetaSequenceChunkFn(SetKind, vr), hashValueBytes)
+func newEmptySetSequenceChunker(vrw ValueReadWriter) *sequenceChunker {
+	return newEmptySequenceChunker(vrw, makeSetLeafChunkFn(vrw), newOrderedMetaSequenceChunkFn(SetKind, vrw), hashValueBytes)
 }
