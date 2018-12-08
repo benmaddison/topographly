@@ -73,7 +73,7 @@ func getNeighbors(p graphql.ResolveParams) (val interface{}, err error) {
     err = fmt.Errorf("Expected *types.Topology, got %v\n", t)
     return
   }
-  neighborMap := make(map[string]*types.Topology_Node, 0)
+  neighborMap := make(map[string]*types.Topology_Node)
   for _, l := range t.Link {
     if *n.Hostname == *l.EndpointA {
       if _, ok := neighborMap[*l.EndpointZ]; !ok {

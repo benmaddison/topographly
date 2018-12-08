@@ -29,10 +29,15 @@ func main() {
   h, err := gql.GetHandler(d)
   if err != nil {
     fmt.Fprintf(os.Stderr, "Could not contruct the graphql handler: %s\n", err)
+    return
   }
   // start the server
   http.Handle("/graphql", h)
   endpoint := "[::1]:8080"
   fmt.Fprintf(os.Stdout, "Listening on http://%s\n", endpoint)
-  http.ListenAndServe(endpoint, nil)
+  err = http.ListenAndServe(endpoint, nil)
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "Could not start http server at http://%s\n", endpoint)
+    return
+  }
 }
