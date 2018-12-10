@@ -3,9 +3,11 @@ package datasource
 import (
   "fmt"
   "os"
+  "time"
   "github.com/attic-labs/noms/go/config"
   "github.com/attic-labs/noms/go/datas"
   "github.com/attic-labs/noms/go/marshal"
+  nomstypes "github.com/attic-labs/noms/go/types"
   "github.com/benmaddison/topographly/internal/types"
 )
 
@@ -50,7 +52,8 @@ func (d *Datasource) PutHead(root *types.Root) (changed bool, err error) {
   if ok && head.Equals(rootValue) {
     return
   }
-  *d.ds, err = (*d.db).CommitValue(*d.ds, rootValue)
+  opts := commitOptions()
+  *d.ds, err = (*d.db).Commit(*d.ds, rootValue, opts)
   changed = true
   return
 }
@@ -62,6 +65,21 @@ func (d *Datasource) Init() (err error) {
     fmt.Fprintf(os.Stdout, "No value at HEAD, initialising empty topology\n")
     newRoot := types.NewRoot()
     _, err = d.PutHead(newRoot)
+  }
+  return
+}
+
+func commitOptions() (opts datas.CommitOptions) {
+  ts := time.Now().Unix()
+  opts = datas.CommitOptions{
+    Parents: nomstypes.Set{},
+    Meta: nomstypes.NewStruct(
+      "Meta",
+      nomstypes.StructData{
+        "timestamp": nomstypes.Number(ts),
+      },
+    ),
+    Policy: nil,
   }
   return
 }
