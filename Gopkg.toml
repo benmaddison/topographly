@@ -1,6 +1,6 @@
-# ignored = [
-#   "github.com/attic-labs/graphql"
-# ]
+required = [
+  "github.com/openconfig/ygot/generator"
+]
 
 [[constraint]]
   name = "github.com/attic-labs/noms"

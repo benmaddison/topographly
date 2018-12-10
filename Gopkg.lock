@@ -233,9 +233,10 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:4ad6d8cfcca21e047576b4f34fbc090136b2f62497f5ad77fb19f46027082155"
+  digest = "1:8fa50da1cdc719ce44a47d1e1dc280d0a6630c50038f946e25f904905e8f6ff6"
   name = "github.com/openconfig/gnmi"
   packages = [
+    "ctree",
     "errlist",
     "proto/gnmi",
     "proto/gnmi_ext",
@@ -257,10 +258,12 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:c4a49745a601ea07b9a5e6277aa769675056a1437e856afecfc29332e3acd603"
+  digest = "1:67cf06652ba68a724a6e5dfa894fb089e3bcab2c0da978b74a1faa27b883a41a"
   name = "github.com/openconfig/ygot"
   packages = [
+    "generator",
     "util",
+    "ygen",
     "ygot",
     "ytypes",
   ]
@@ -410,6 +413,7 @@
     "github.com/graphql-go/graphql",
     "github.com/graphql-go/handler",
     "github.com/openconfig/goyang/pkg/yang",
+    "github.com/openconfig/ygot/generator",
     "github.com/openconfig/ygot/ygot",
     "github.com/openconfig/ygot/ytypes",
   ]
