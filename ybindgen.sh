@@ -11,7 +11,8 @@ for F in yang/topology-v*.yang; do
   # get the major version identifier
   V=$(echo $F | sed -E 's/^.*topology-(v.+)\.yang$/\1/')
   # set the output path for the generated bindings
-  OUTFILE="internal/ybinds/$V/generated.go"
+  OUTDIR="internal/ybinds/$V"
+  OUTFILE="$OUTDIR/generated.go"
   # set up the generator command
   GEN_EXEC="$GEN_PATH $GEN_ARGS -package_name=$V -output_file=$OUTFILE $F"
   # create the output path and generate the bindings
