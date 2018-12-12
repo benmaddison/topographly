@@ -8,7 +8,7 @@ YANG_DIR="yang"
 # Set up a venv to run the yang linter
 VENV_PATH=".venv"
 echo "Creating venv at $VENV_PATH"
-/usr/bin/env python3 -m venv $VENV_PATH
+/usr/bin/env virtualenv $VENV_PATH
 echo "Installing pyang"
 $VENV_PATH/bin/pip install -U pip pyang
 echo "Getting openconfig pyang plugin"
