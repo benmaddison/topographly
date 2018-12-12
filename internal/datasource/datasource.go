@@ -8,7 +8,7 @@ import (
   "github.com/attic-labs/noms/go/datas"
   "github.com/attic-labs/noms/go/marshal"
   nomstypes "github.com/attic-labs/noms/go/types"
-  "github.com/benmaddison/topographly/internal/types"
+  "github.com/benmaddison/topographly/internal/ybinds"
 )
 
 type Datasource struct {
@@ -29,22 +29,25 @@ func New(path string) (d *Datasource, err error) {
   return
 }
 
-func (d *Datasource) GetHead() (root *types.Root, err error) {
-  head, ok := d.ds.MaybeHeadValue()
+func (d *Datasource) GetHead() (ins *ybinds.Instance, err error) {
+  head, ok := d.ds.MaybeHead()
   if !ok {
     err = fmt.Errorf("No value at HEAD\n")
     return
   }
-  root = types.NewRoot()
-  err = marshal.Unmarshal(head, root)
+  ins, err = ybinds.NewInstance()
+  if err != nil {
+    return
+  }
+  err = marshal.Unmarshal(head, ins)
   if err != nil {
     return
   }
   return
 }
 
-func (d *Datasource) PutHead(root *types.Root) (changed bool, err error) {
-  rootValue, err := marshal.Marshal(*d.db, *root)
+func (d *Datasource) PutHead(ins *ybinds.Instance) (changed bool, err error) {
+  rootValue, err := marshal.Marshal(*d.db, *ins)
   if err != nil {
     return
   }
@@ -52,7 +55,7 @@ func (d *Datasource) PutHead(root *types.Root) (changed bool, err error) {
   if ok && head.Equals(rootValue) {
     return
   }
-  opts := commitOptions()
+  opts := commitOptions(ins)
   *d.ds, err = (*d.db).Commit(*d.ds, rootValue, opts)
   changed = true
   return
@@ -63,13 +66,17 @@ func (d *Datasource) Init() (err error) {
   if err != nil {
     // commit an empty topology to the datasource
     fmt.Fprintf(os.Stdout, "No value at HEAD, initialising empty topology\n")
-    newRoot := types.NewRoot()
-    _, err = d.PutHead(newRoot)
+    ins, lerr := ybinds.NewInstance()
+    if lerr != nil {
+      err = lerr
+      return
+    }
+    _, err = d.PutHead(ins)
   }
   return
 }
 
-func commitOptions() (opts datas.CommitOptions) {
+func commitOptions(ins *ybinds.Instance) (opts datas.CommitOptions) {
   ts := time.Now().Unix()
   opts = datas.CommitOptions{
     Parents: nomstypes.Set{},
@@ -77,6 +84,7 @@ func commitOptions() (opts datas.CommitOptions) {
       "Meta",
       nomstypes.StructData{
         "timestamp": nomstypes.Number(ts),
+        "schema": nomstypes.String(ins.SchemaName),
       },
     ),
     Policy: nil,

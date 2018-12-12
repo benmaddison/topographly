@@ -5,53 +5,51 @@ import (
   "github.com/graphql-go/graphql"
   "github.com/openconfig/ygot/ygot"
   "github.com/benmaddison/topographly/internal/datasource"
-  "github.com/benmaddison/topographly/internal/types"
+  "github.com/benmaddison/topographly/internal/ybinds"
 )
+
+func getInstance(p graphql.ResolveParams) (ins *ybinds.Instance, err error) {
+  ins, ok := p.Info.RootValue.(map[string]interface{})["instance"].(*ybinds.Instance)
+  if !ok {
+    err = fmt.Errorf("Could not get data instance from root object: %v\n", p.Info.RootValue)
+  }
+  return
+}
 
 func getDatasource(p graphql.ResolveParams) (d *datasource.Datasource, err error) {
   d, ok := p.Info.RootValue.(map[string]interface{})["datasource"].(*datasource.Datasource)
   if !ok {
-    err = fmt.Errorf("Could not get datastore from root object: %v\n", p.Info.RootValue)
+    err = fmt.Errorf("Could not get datasource from root object: %v\n", p.Info.RootValue)
   }
+  return
+}
+
+func putInstance(p graphql.ResolveParams, ins *ybinds.Instance) (err error) {
+  d, err := getDatasource(p)
+  if err != nil {
+    return
+  }
+  _, err = d.PutHead(ins)
   return
 }
 
 func getTopology(p graphql.ResolveParams) (val interface{}, err error) {
-  d, err := getDatasource(p)
+  ins, err := getInstance(p)
   if err != nil {
     return
   }
-  root, err := d.GetHead()
-  if err != nil {
-    return
-  }
-  if root.Topology == nil {
-    root.Topology = &types.Topology{}
-  }
-  val = root.Topology
-  return
-}
-
-func putTopology(p graphql.ResolveParams, t *types.Topology) (err error) {
-  d, err := getDatasource(p)
-  if err != nil {
-    return
-  }
-  root := &types.Root{
-    Topology: t,
-  }
-  _, err = d.PutHead(root)
+  val = ins.Root.GetOrCreateTopology()
   return
 }
 
 func getNodes(p graphql.ResolveParams) (val interface{}, err error) {
-  t, ok := p.Source.(*types.Topology)
-  if !ok {
-    err = fmt.Errorf("Expected *types.Topology, got %v\n", p.Source)
+  ins, err := getInstance(p)
+  if err != nil {
     return
   }
-  nodes := make([]*types.Topology_Node, 0, len(t.Node))
-  for _, node := range t.Node {
+  topology := ins.Root.GetOrCreateTopology()
+  nodes := make([]*ybinds.Node, 0, len(topology.Node))
+  for _, node := range topology.Node {
     nodes = append(nodes, node)
   }
   val = &nodes
@@ -59,34 +57,30 @@ func getNodes(p graphql.ResolveParams) (val interface{}, err error) {
 }
 
 func getNeighbors(p graphql.ResolveParams) (val interface{}, err error) {
-  n, ok := p.Source.(*types.Topology_Node)
+  node, ok := p.Source.(*ybinds.Node)
   if !ok {
-    err = fmt.Errorf("Expected *types.Topology_Node, got %v\n", p.Source)
+    err = fmt.Errorf("Expected *ybinds.Node, got %v\n", p.Source)
     return
   }
-  topology, err := getTopology(p)
+  ins, err := getInstance(p)
   if err != nil {
     return
   }
-  t, ok := topology.(*types.Topology)
-  if !ok {
-    err = fmt.Errorf("Expected *types.Topology, got %v\n", t)
-    return
-  }
-  neighborMap := make(map[string]*types.Topology_Node)
-  for _, l := range t.Link {
-    if *n.Hostname == *l.EndpointA {
-      if _, ok := neighborMap[*l.EndpointZ]; !ok {
-        neighborMap[*l.EndpointZ] = t.Node[*l.EndpointZ]
+  topology := ins.Root.GetOrCreateTopology()
+  neighborMap := make(map[string]*ybinds.Node)
+  for _, link := range topology.Link {
+    if *node.Hostname == *link.EndpointA {
+      if _, ok := neighborMap[*link.EndpointZ]; !ok {
+        neighborMap[*link.EndpointZ] = topology.Node[*link.EndpointZ]
       }
     }
-    if *n.Hostname == *l.EndpointZ {
-      if _, ok := neighborMap[*l.EndpointA]; !ok {
-        neighborMap[*l.EndpointA] = t.Node[*l.EndpointA]
+    if *node.Hostname == *link.EndpointZ {
+      if _, ok := neighborMap[*link.EndpointA]; !ok {
+        neighborMap[*link.EndpointA] = topology.Node[*link.EndpointA]
       }
     }
   }
-  neighbors := make([]*types.Topology_Node, 0, len(neighborMap))
+  neighbors := make([]*ybinds.Node, 0, len(neighborMap))
   for _, node := range neighborMap {
     neighbors = append(neighbors, node)
   }
@@ -96,55 +90,47 @@ func getNeighbors(p graphql.ResolveParams) (val interface{}, err error) {
 
 func addNode(p graphql.ResolveParams) (val interface{}, err error) {
   hostname := p.Args["hostname"].(string)
-  topology, err := getTopology(p)
+  ins, err := getInstance(p)
   if err != nil {
     return
   }
-  t, ok := topology.(*types.Topology)
-  if !ok {
-    err = fmt.Errorf("Expected *types.Topology, got %v\n", t)
-    return
-  }
-  _, err = t.NewNode(hostname)
+  topology := ins.Root.GetOrCreateTopology()
+  _, err = topology.NewNode(hostname)
   if err != nil {
     return
   }
-  err = putTopology(p, t)
+  err = putInstance(p, ins)
   if err != nil {
     return
   }
-  val = t
+  val = topology
   return
 }
 
 func delNode(p graphql.ResolveParams) (val interface{}, err error) {
   hostname := p.Args["hostname"].(string)
-  topology, err := getTopology(p)
+  ins, err := getInstance(p)
   if err != nil {
     return
   }
-  t, ok := topology.(*types.Topology)
-  if !ok {
-    err = fmt.Errorf("Expected *types.Topology, got %v\n", t)
-    return
-  }
-  t.DeleteNode(hostname)
-  err = putTopology(p, t)
+  topology := ins.Root.GetOrCreateTopology()
+  topology.DeleteNode(hostname)
+  err = putInstance(p, ins)
   if err != nil {
     return
   }
-  val = t
+  val = topology
   return
 }
 
 func getLinks(p graphql.ResolveParams) (val interface{}, err error) {
-  t, ok := p.Source.(*types.Topology)
-  if !ok {
-    err = fmt.Errorf("Expected *types.Topology, got %v\n", p.Source)
+  ins, err := getInstance(p)
+  if err != nil {
     return
   }
-  links := make([]*types.Topology_Link, 0, len(t.Link))
-  for _, link := range t.Link {
+  topology := ins.Root.GetOrCreateTopology()
+  links := make([]*ybinds.Link, 0, len(topology.Link))
+  for _, link := range topology.Link {
     links = append(links, link)
   }
   val = &links
@@ -152,23 +138,19 @@ func getLinks(p graphql.ResolveParams) (val interface{}, err error) {
 }
 
 func getEndpoints(p graphql.ResolveParams) (val interface{}, err error) {
-  l, ok := p.Source.(*types.Topology_Link)
+  link, ok := p.Source.(*ybinds.Link)
   if !ok {
-    err = fmt.Errorf("Expected *types.Topology_Link, got %v\n", p.Source)
+    err = fmt.Errorf("Expected *ybinds.Link, got %v\n", p.Source)
     return
   }
-  topology, err := getTopology(p)
+  ins, err := getInstance(p)
   if err != nil {
     return
   }
-  t, ok := topology.(*types.Topology)
-  if !ok {
-    err = fmt.Errorf("Expected *types.Topology, got %v\n", t)
-    return
-  }
-  endpoints := []*types.Topology_Node{
-    t.Node[*l.EndpointA],
-    t.Node[*l.EndpointZ],
+  topology := ins.Root.GetOrCreateTopology()
+  endpoints := []*ybinds.Node{
+    topology.Node[*link.EndpointA],
+    topology.Node[*link.EndpointZ],
   }
   val = &endpoints
   return
@@ -178,45 +160,37 @@ func addLink(p graphql.ResolveParams) (val interface{}, err error) {
   prefix := p.Args["ipPrefix"].(string)
   endpointA := p.Args["endpointA"].(string)
   endpointZ := p.Args["endpointZ"].(string)
-  topology, err := getTopology(p)
+  ins, err := getInstance(p)
   if err != nil {
     return
   }
-  t, ok := topology.(*types.Topology)
-  if !ok {
-    err = fmt.Errorf("Expected *types.Topology, got %v\n", t)
-    return
-  }
-  link, err := t.NewLink(prefix)
+  topology := ins.Root.GetOrCreateTopology()
+  link, err := topology.NewLink(prefix)
   if err != nil {
     return
   }
   link.EndpointA = ygot.String(endpointA)
   link.EndpointZ = ygot.String(endpointZ)
-  err = putTopology(p, t)
+  err = putInstance(p, ins)
   if err != nil {
     return
   }
-  val = t
+  val = topology
   return
 }
 
 func delLink(p graphql.ResolveParams) (val interface{}, err error) {
   prefix := p.Args["ipPrefix"].(string)
-  topology, err := getTopology(p)
+  ins, err := getInstance(p)
   if err != nil {
     return
   }
-  t, ok := topology.(*types.Topology)
-  if !ok {
-    err = fmt.Errorf("Expected *types.Topology, got %v\n", t)
-    return
-  }
-  t.DeleteLink(prefix)
-  err = putTopology(p, t)
+  topology := ins.Root.GetOrCreateTopology()
+  topology.DeleteLink(prefix)
+  err = putInstance(p, ins)
   if err != nil {
     return
   }
-  val = t
+  val = topology
   return
 }

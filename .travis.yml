@@ -9,6 +9,9 @@ env:
     - GLANGCI_LINT_VERSION="v1.12.3"
     - COVERPROFILE="coverage.out"
 
+before_install:
+  - ./ybindgen.sh
+
 install:
   - go get github.com/mattn/goveralls
   - curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $GOPATH/bin $GLANGCI_LINT_VERSION

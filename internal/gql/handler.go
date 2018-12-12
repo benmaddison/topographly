@@ -8,8 +8,16 @@ import (
 )
 
 func GetHandler(d *datasource.Datasource) (h http.Handler, err error) {
-  rootObjectFn := func(ctx context.Context, r *http.Request) (map[string]interface{}) {
-    return map[string]interface{}{"datasource": d}
+  rootObjectFn := func(ctx context.Context, r *http.Request) (obj map[string]interface{}) {
+    ins, err := d.GetHead()
+    if err != nil {
+      panic(err)
+    }
+    obj = map[string]interface{}{
+      "datasource": d,
+      "instance": ins,
+    }
+    return
   }
 
   schema, err := makeSchema()
