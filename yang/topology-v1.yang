@@ -1,71 +1,107 @@
-module topographly-v1 {
+module topology-v1 {
   yang-version "1.1";
   namespace "https://github.com/benmaddison/topographly/v1/";
   prefix "tg-v1";
 
+  organization "Workonline Communications";
+  contact
+    "Ben Maddison
+     benm@workonline.africa";
+
+  description
+    "This module describes a simple model of a network topology.
+     It is not intended for use in production.";
+
   revision 2018-12-10 {
     description
-      "v1.0.0
-       Initial revision";
+      "Initial revision";
+    reference "1.0.0";
   }
 
   typedef node-ref {
     type leafref {
-      path "../../../../nodes/node/hostname";
+      path "/topology/nodes/node/hostname";
     }
+    description "Reference to a node by hostname";
   }
 
   grouping node-data {
+    description
+      "Model of a network node";
     leaf hostname {
       type string;
+      description "Node hostname";
     }
   }
 
   grouping link-data {
+    description
+      "Model of a network link";
     leaf ip-prefix {
       type string;
+      description "IP prefix of the link";
     }
     leaf endpoint-a {
       type node-ref;
+      description "A-side endpoint node";
     }
     leaf endpoint-z {
-      type leafref {
-        path "../../../../nodes/node/hostname";
-      }
+      type node-ref;
+      description "Z-side endpoint node";
     }
   }
 
   container topology {
+    description
+      "Model of a network topology";
     container nodes {
+      description
+        "List container for node objects";
       list node {
         key "hostname";
+        description
+          "List of node objects";
         leaf hostname {
           type leafref {
             path "../config/hostname";
           }
+          description "Ref to canonical node hostname";
         }
         container config {
+          description
+            "Node config container";
           uses node-data;
         }
         container state {
           config false;
+          description
+            "Node state container";
           uses node-data;
         }
       }
     }
     container links {
+      description
+        "List container for link objects";
       list link {
         key "ip-prefix";
+        description
+          "List of link objects";
         leaf ip-prefix {
           type leafref {
             path "../config/ip-prefix";
           }
+          description "Ref to canonical link prefix";
         }
         container config {
+          description
+            "Link config container";
           uses link-data;
         }
         container state {
           config false;
+          description
+            "Link state container";
           uses link-data;
         }
       }

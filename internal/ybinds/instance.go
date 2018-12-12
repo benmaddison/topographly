@@ -95,5 +95,9 @@ func (ins *Instance) UnmarshalNoms(v nomstypes.Value) (err error) {
     return
   }
   err = ins.Schema.Unmarshal(jsonInstance, ins.Root)
+  if err != nil {
+    return
+  }
+  err = ins.Root.Validate()
   return
 }

@@ -13,10 +13,12 @@ echo "Installing pyang"
 $VENV_PATH/bin/pip install -U pip pyang
 echo "Getting openconfig pyang plugin"
 /usr/bin/env wget -O $VENV_PATH/oc-pyang.zip https://github.com/openconfig/oc-pyang/archive/master.zip
-/usr/bin/env unzip $VENV_PATH/oc-pyang.zip -d $VENV_PATH/oc-pyang/
+/usr/bin/env unzip -u $VENV_PATH/oc-pyang.zip -d $VENV_PATH/oc-pyang/
 
 echo "Running oc-pyang linter"
-$VENV_PATH/bin/pyang --plugindir=$VENV_PATH/oc-pyang/oc-pyang-master/openconfig_pyang/plugins/ --lint $YANG_DIR/topology-v*.yang || exit 2
+if ! $VENV_PATH/bin/pyang --plugindir=$VENV_PATH/oc-pyang/oc-pyang-master/openconfig_pyang/plugins/ --lint $YANG_DIR/topology-v*.yang; then
+  exit 1
+fi
 
 GEN_PATH="vendor/github.com/openconfig/ygot/generator/generator.go"
 GEN_ARGS="-path=yang -generate_delete -generate_getters -generate_fakeroot -fakeroot_name=root -compress_paths"
