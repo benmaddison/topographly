@@ -13,3 +13,6 @@
 
 # Noms Data
 data/
+
+# Python venv for pyang
+.venv/

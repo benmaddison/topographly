@@ -8,15 +8,22 @@ env:
     - NOMS_VERSION_NEXT=1
     - GLANGCI_LINT_VERSION="v1.12.3"
     - COVERPROFILE="coverage.out"
+    - PYANG_PYTHON_VERSION="python3.6"
+    - PYANG_PYTHON_VENV=".venv"
 
 before_install:
-  - ./ybindgen.sh
+  - $PYANG_PYTHON_VERSION -m venv $PYANG_PYTHON_VENV
+  - source $PYANG_PYTHON_VENV/bin/activate
+  - pip install -U pip setuptools
 
 install:
   - go get github.com/mattn/goveralls
   - curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $GOPATH/bin $GLANGCI_LINT_VERSION
+  - pip install pyang https://github.com/openconfig/oc-pyang/archive/master.zip
 
 script:
+  - pyang --plugindir=.venv/lib/$PYANG_PYTHON_VERSION/site-packages/openconfig_pyang/plugins/ --lint yang/*.yang
+  - ./ybindgen.sh
   - golangci-lint run
   - go test ./... -v -covermode=count -coverprofile=$COVERPROFILE
 
